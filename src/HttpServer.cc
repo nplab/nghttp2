@@ -44,6 +44,9 @@
 #ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
 #endif // HAVE_ARPA_INET_H
+#ifdef SCTP_ENABLED
+#include <netinet/sctp.h>
+#endif // SCTP_ENABLED
 
 #include <cassert>
 #include <set>
@@ -66,6 +69,9 @@
 #ifndef O_BINARY
 #define O_BINARY (0)
 #endif // O_BINARY
+
+#define NGHTTP2_STREAM_ID_MASK ((1u << 31) - 1)
+#define MAX_SCTP_STREAMS 2048
 
 namespace nghttp2 {
 
@@ -537,7 +543,11 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
     write_ = &Http2Handler::tls_handshake;
   } else {
     read_ = &Http2Handler::read_clear;
+#ifdef SCTP_ENABLED
+    write_ = &Http2Handler::write_clear_sctp;
+#else // SCTP_ENABLED
     write_ = &Http2Handler::write_clear;
+#endif
   }
 }
 
@@ -682,6 +692,102 @@ int Http2Handler::write_clear() {
   }
 
   return 0;
+}
+
+int Http2Handler::write_clear_sctp() {
+  auto loop = sessions_->get_loop();
+  nghttp2_frame_hd hd;
+  size_t framelen = 0;
+
+  char* cmsgbuf[CMSG_SPACE(sizeof(struct sctp_sndinfo))];
+  struct sctp_sndinfo *sndinfo;
+  struct iovec iov;
+  struct msghdr msghdr;
+  struct cmsghdr *cmsg;
+
+  /* initialize */
+  memset(cmsgbuf, 0, sizeof(cmsgbuf));
+  memset(&msghdr, 0, sizeof(struct msghdr));
+  memset(&iov, 0, sizeof(struct iovec));
+
+  msghdr.msg_iov = &iov;
+  msghdr.msg_iovlen = 1;
+
+  msghdr.msg_control = cmsgbuf;
+  msghdr.msg_controllen = sizeof(cmsgbuf);
+
+  cmsg = CMSG_FIRSTHDR(&msghdr);
+  cmsg->cmsg_level = IPPROTO_SCTP;
+  cmsg->cmsg_len = sizeof(cmsgbuf);
+  cmsg->cmsg_type = SCTP_SNDINFO;
+  sndinfo = (struct sctp_sndinfo*) CMSG_DATA(cmsg);
+
+  std::cerr << "write_clear_sctp" << std::endl;
+  for (;;) {
+    if (wb_.rleft() > 0) {
+
+      if (wb_.rleft() >= 9) {
+          std::cerr << "### parsing http2 frame - bufferd : " << wb_.rleft() << std::endl;
+          frame_unpack_frame_hd(&hd, wb_.pos);
+          std::cerr << "Stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+          framelen = hd.length + 9;
+
+          sndinfo->snd_sid = hd.stream_id;
+          iov.iov_base = wb_.pos;
+          iov.iov_len = framelen;
+      } else {
+          std::cerr << "### not enough data for complete frame ..." << std::endl;
+      }
+
+      ssize_t nwrite;
+      while ((nwrite = sendmsg(fd_, &msghdr, 0)) == -1 &&
+             errno == EINTR)
+        ;
+      if (nwrite == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          ev_io_start(loop, &wev_);
+          return 0;
+        }
+        return -1;
+      }
+      wb_.drain(nwrite);
+      continue;
+    }
+    wb_.reset();
+    if (fill_wb() != 0) {
+      return -1;
+    }
+    if (wb_.rleft() == 0) {
+      break;
+    }
+  }
+
+  if (wb_.rleft() == 0) {
+    ev_io_stop(loop, &wev_);
+  } else {
+    ev_io_start(loop, &wev_);
+  }
+
+  if (nghttp2_session_want_read(session_) == 0 &&
+      nghttp2_session_want_write(session_) == 0 && wb_.rleft() == 0) {
+    return -1;
+  }
+
+  return 0;
+}
+
+void Http2Handler::frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf) {
+  hd->length = get_uint32(&buf[0]) >> 8;
+  hd->type = buf[3];
+  hd->flags = buf[4];
+  hd->stream_id = get_uint32(&buf[5]) & NGHTTP2_STREAM_ID_MASK;
+  hd->reserved = 0;
+}
+
+uint32_t Http2Handler::get_uint32(const uint8_t *data) {
+  uint32_t n;
+  memcpy(&n, data, sizeof(uint32_t));
+  return ntohl(n);
 }
 
 int Http2Handler::tls_handshake() {
@@ -1988,7 +2094,9 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
   int r;
   bool ok = false;
   const char *addr = nullptr;
-
+#ifdef SCTP_ENABLED
+  struct sctp_initmsg initmsg;    /* To signal die number of incoming and outgoing streams */
+#endif // SCTP_ENABLED
   std::shared_ptr<AcceptHandler> acceptor;
   auto service = util::utos(config->port);
 
@@ -2035,6 +2143,18 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
       }
     }
 #endif // IPV6_V6ONLY
+
+#ifdef SCTP_ENABLED
+    /* Ensure an appropriate number of stream will be negotated. */
+    initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
+    initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
+    initmsg.sinit_max_attempts = 0;   /* Use default */
+    initmsg.sinit_max_init_timeo = 0; /* Use default */
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(initmsg)) < 0) {
+      exit(EXIT_FAILURE);
+    }
+#endif // SCTP_ENABLED
+
     if (bind(fd, rp->ai_addr, rp->ai_addrlen) == 0 && listen(fd, 1000) == 0) {
       if (!acceptor) {
         acceptor = std::make_shared<AcceptHandler>(sv, sessions, config);

@@ -35,6 +35,9 @@
 #include <netinet/in.h>
 #endif // HAVE_NETINET_IN_H
 #include <netinet/tcp.h>
+#ifdef SCTP_ENABLED
+#include <netinet/sctp.h>
+#endif // SCTP_ENABLED
 #include <getopt.h>
 
 #include <cassert>
@@ -63,6 +66,8 @@
 #ifndef O_BINARY
 #define O_BINARY (0)
 #endif // O_BINARY
+
+#define MAX_SCTP_STREAMS 2048
 
 namespace nghttp2 {
 
@@ -599,6 +604,9 @@ int HttpClient::resolve_host(const std::string &host, uint16_t port) {
 
 int HttpClient::initiate_connection() {
   int rv;
+#ifdef SCTP_ENABLED
+  struct sctp_initmsg initmsg;    /* To signal die number of incoming and outgoing streams */
+#endif // SCTP_ENABLED
 
   cur_addr = nullptr;
   while (next_addr) {
@@ -608,6 +616,17 @@ int HttpClient::initiate_connection() {
     if (fd == -1) {
       continue;
     }
+
+    #ifdef SCTP_ENABLED
+        /* Ensure an appropriate number of stream will be negotated. */
+        initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
+        initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
+        initmsg.sinit_max_attempts = 0;   /* Use default */
+        initmsg.sinit_max_init_timeo = 0; /* Use default */
+        if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(initmsg)) < 0) {
+          exit(EXIT_FAILURE);
+        }
+    #endif // SCTP_ENABLED
 
     if (ssl_ctx) {
       // We are establishing TLS connection.
