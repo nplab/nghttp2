@@ -860,14 +860,21 @@ int make_socket_nodelay(int fd) {
 
 int create_nonblock_socket(int family) {
 #ifdef SOCK_NONBLOCK
+#ifdef SCTP_ENABLED
+  auto fd = socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_SCTP);
+#else // SCTP_ENABLED
   auto fd = socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+#endif // SCTP_ENABLED
 
   if (fd == -1) {
     return -1;
   }
 #else  // !SOCK_NONBLOCK
+#ifdef SCTP_ENABLED
+  auto fd = socket(family, SOCK_STREAM, IPPROTO_SCTP);
+#else // SCTP_ENABLED
   auto fd = socket(family, SOCK_STREAM, 0);
-
+#endif // SCTP_ENABLED
   if (fd == -1) {
     return -1;
   }

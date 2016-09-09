@@ -1996,6 +1996,9 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_flags = AI_PASSIVE;
+#ifdef SCTP_ENABLED
+  hints.ai_protocol = IPPROTO_SCTP;
+#endif // SCTP_ENABLED
 #ifdef AI_ADDRCONFIG
   hints.ai_flags |= AI_ADDRCONFIG;
 #endif // AI_ADDRCONFIG
