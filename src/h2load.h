@@ -304,6 +304,7 @@ struct Client {
   // true if the current connection will be closed, and no more new
   // request cannot be processed.
   bool final;
+  bool magic_sent;
 
   enum { ERR_CONNECT_FAIL = -100 };
 
@@ -337,7 +338,9 @@ struct Client {
   // low-level I/O callback functions called by do_read/do_write
   int connected();
   int read_clear();
+  int read_clear_sctp();
   int write_clear();
+  int write_clear_sctp();
   int tls_handshake();
   int read_tls();
   int write_tls();
@@ -370,6 +373,9 @@ struct Client {
   void record_client_end_time();
 
   void signal_write();
+
+  void frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
+  uint32_t get_uint32(const uint8_t *data);
 };
 
 } // namespace h2load
