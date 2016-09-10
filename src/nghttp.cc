@@ -635,6 +635,12 @@ int HttpClient::initiate_connection() {
     if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
       exit(EXIT_FAILURE);
     }
+
+    val = 1;
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_NODELAY, (char*) &val, sizeof(val)) < 0) {
+      exit(EXIT_FAILURE);
+    }
+
 #endif // SCTP_ENABLED
 
     if (ssl_ctx) {
@@ -808,6 +814,7 @@ int HttpClient::read_clear_sctp() {
       return -1;
     }
 
+    // unpack header
     frame_unpack_frame_hd(&hd, buf.data());
 
     scmsg = CMSG_FIRSTHDR(&msg);
@@ -822,8 +829,15 @@ int HttpClient::read_clear_sctp() {
       std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
     }
 
+    // checks : streams match?
     if (hd.stream_id != rcvinfo->rcv_sid) {
-      std::cerr << "http2/sctp stream mismatch ... FIX ME!" << std::endl;
+      std::cerr << "read_clear_sctp - http2/sctp stream mismatch ... FIX ME!" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+
+    // checks : sizes match?
+    if ((hd.length + 9) != nread) {
+      std::cerr << "read_clear_sctp - frame-length/datalen mismatch ... FIX ME!" << std::endl;
       exit(EXIT_FAILURE);
     }
 
@@ -917,7 +931,6 @@ int HttpClient::write_clear_sctp() {
       /*
        * Magic packet already sent - just add a frame
        */
-
       if (iov[0].iov_len >= 9) {
         frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base);
         if (config.verbose) {
@@ -930,14 +943,19 @@ int HttpClient::write_clear_sctp() {
         exit(EXIT_FAILURE);
       }
 
+      if (hd.stream_id > MAX_SCTP_STREAMS) {
+        std::cerr << "hd.stream > MAX_SCTP_STREAMS ... FIX ME!" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+
       framelen = 9 + hd.length;
       sndinfo->snd_sid = hd.stream_id;
+
     } else {
       /*
        * Send magic packet (24 bytes) and mandatory settings frame
        */
-
-      if (iov[0].iov_len >= 24 + 9) {
+      if (iov[0].iov_len >= (24 + 9)) {
         frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base + 24);
         if (config.verbose) {
           std::cerr << "sending magic frame + settings frame ..." << std::endl;

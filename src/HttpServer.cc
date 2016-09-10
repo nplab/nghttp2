@@ -693,19 +693,29 @@ int Http2Handler::read_clear_sctp() {
       return -1;
     }
 
-    if (magic_received)
+    if (magic_received) {
       frame_unpack_frame_hd(&hd, buf.data());
-    else if (nread >= 24){
+      // checks : sizes match?
+      if (nread != (hd.length + 9)) {
+        std::cerr << "read_clear_sctp - size mismatch ... FIX ME!" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    } else if (nread >= 24){
       frame_unpack_frame_hd(&hd, buf.data() + 24);
+      // checks : sizes match?
+      if (nread != (24 + hd.length + 9)) {
+        std::cerr << "read_clear_sctp - size mismatch ... FIX ME!" << std::endl;
+        exit(EXIT_FAILURE);
+      }
       magic_received = true;
     } else {
-      std::cerr << "something is really wrong here ... FIX ME!" << std::endl;
+      std::cerr << "read_clear_sctp - something is really wrong here ... FIX ME!" << std::endl;
       exit(EXIT_FAILURE);
     }
 
     scmsg = CMSG_FIRSTHDR(&msg);
     if (scmsg == NULL) {
-        std::cerr << "something is really wrong here ... FIX ME!" << std::endl;
+        std::cerr << "read_clear_sctp - CMSG_FIRSTHDR is NULL ... FIX ME!" << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -715,8 +725,9 @@ int Http2Handler::read_clear_sctp() {
       std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
     }
 
+    // checks : streams match?
     if (hd.stream_id != rcvinfo->rcv_sid) {
-      std::cerr << "http2/sctp stream mismatch ... FIX ME!" << std::endl;
+      std::cerr << "read_clear_sctp - http2/sctp stream mismatch ... FIX ME!" << std::endl;
       exit(EXIT_FAILURE);
     }
 
@@ -825,6 +836,12 @@ int Http2Handler::write_clear_sctp() {
         iov.iov_len = framelen;
       } else {
         std::cerr << "### not enough data for complete frame ..." << std::endl;
+        exit(EXIT_FAILURE);
+      }
+
+      // some additional checks
+      if (hd.stream_id > MAX_SCTP_STREAMS) {
+        std::cerr << "### hd.stream_id > MAX_SCTP_STREAMS ... HANDLE IT!" << std::endl;
         exit(EXIT_FAILURE);
       }
 
@@ -2247,6 +2264,12 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
     /* Enable RCVINFO delivery */
     val = 1;
     if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
+      exit(EXIT_FAILURE);
+    }
+
+    /* No delay */
+    val = 1;
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_NODELAY, (char*) &val, sizeof(val)) < 0) {
       exit(EXIT_FAILURE);
     }
 #endif // SCTP_ENABLED
