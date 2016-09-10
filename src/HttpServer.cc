@@ -822,32 +822,56 @@ int Http2Handler::write_clear_sctp() {
   sndinfo = (struct sctp_sndinfo*) CMSG_DATA(cmsg);
 
   for (;;) {
+
+    framelen = 0;
     if (wb_.rleft() > 0) {
 
-      if (wb_.rleft() >= 9) {
-        frame_unpack_frame_hd(&hd, wb_.pos);
+      while (wb_.rleft() >= (framelen + 9)) {
+        frame_unpack_frame_hd(&hd, wb_.pos + framelen);
 
         if (sessions_->get_config()->verbose) {
           std::cerr << "### outgoing http2 frame - buffered total : " << wb_.rleft() << std::endl;
-          std::cerr << "stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+          std::cerr << "stream : " << hd.stream_id << " - length : " << hd.length << " - type : " << hd.type << std::endl;
         }
 
         framelen = hd.length + 9;
-#ifdef SCTP_MULTISTREAM
-        sndinfo->snd_sid = hd.stream_id;
-#else // SCTP_MULTISTREAM
-        sndinfo->snd_sid = 0;
-#endif
-        iov.iov_base = wb_.pos;
-        iov.iov_len = framelen;
-      } else {
+
+        // check for CONTINUATION frames
+        // frame: HEADER and flags: not END_HEADERS
+        if ((hd.type == NGHTTP2_HEADERS) && (hd.flags & ~0x4)) {
+          std::cerr << "NGHTTP2_HEADERS" << std::endl;
+          continue;
+        // frame: PUSH_PROMISE and flags: not END_HEADERS
+        } else if ((hd.type == NGHTTP2_PUSH_PROMISE) && (hd.flags & ~0x4)) {
+          std::cerr << "NGHTTP2_PUSH_PROMISE" << std::endl;
+          continue;
+        // frame: NGHTTP2_CONTINUATION and flags: not END_HEADERS
+        } else if ((hd.type == NGHTTP2_CONTINUATION) && (hd.flags & ~0x4)) {
+          std::cerr << "NGHTTP2_CONTINUATION" << std::endl;
+          continue;
+        }
+
+        break;
+      }
+
+      if (framelen == 0) {
         std::cerr << "### not enough data for complete frame ..." << std::endl;
         exit(EXIT_FAILURE);
       }
 
+      iov.iov_base = wb_.pos;
+      iov.iov_len = framelen;
+
+
+#ifdef SCTP_MULTISTREAM
+      sndinfo->snd_sid = hd.stream_id;
+#else // SCTP_MULTISTREAM
+      sndinfo->snd_sid = 0;
+#endif
+
       // some additional checks
       if (hd.stream_id > MAX_SCTP_STREAMS) {
-        std::cerr << "### hd.stream_id > MAX_SCTP_STREAMS ... HANDLE IT!" << std::endl;
+        std::cerr << "### hd.stream_id (" << hd.stream_id << ") > MAX_SCTP_STREAMS ... HANDLE IT!" << std::endl;
         exit(EXIT_FAILURE);
       }
 
