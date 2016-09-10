@@ -710,8 +710,10 @@ int Http2Handler::read_clear_sctp() {
     }
 
     rcvinfo = (struct sctp_rcvinfo *) CMSG_DATA(scmsg);
-    std::cerr << "### incoming http2 frame - nread : " << nread << std::endl;
-    std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
+    if (sessions_->get_config()->verbose) {
+      std::cerr << "### incoming http2 frame - nread : " << nread << std::endl;
+      std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
+    }
 
     if (hd.stream_id != rcvinfo->rcv_sid) {
       std::cerr << "http2/sctp stream mismatch ... FIX ME!" << std::endl;
@@ -806,21 +808,24 @@ int Http2Handler::write_clear_sctp() {
   cmsg->cmsg_type = SCTP_SNDINFO;
   sndinfo = (struct sctp_sndinfo*) CMSG_DATA(cmsg);
 
-  std::cerr << "write_clear_sctp" << std::endl;
   for (;;) {
     if (wb_.rleft() > 0) {
 
       if (wb_.rleft() >= 9) {
-          std::cerr << "### outgoing http2 frame - buffered total : " << wb_.rleft() << std::endl;
-          frame_unpack_frame_hd(&hd, wb_.pos);
-          std::cerr << "stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
-          framelen = hd.length + 9;
+        frame_unpack_frame_hd(&hd, wb_.pos);
 
-          sndinfo->snd_sid = hd.stream_id;
-          iov.iov_base = wb_.pos;
-          iov.iov_len = framelen;
+        if (sessions_->get_config()->verbose) {
+          std::cerr << "### outgoing http2 frame - buffered total : " << wb_.rleft() << std::endl;
+          std::cerr << "stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+        }
+
+        framelen = hd.length + 9;
+        sndinfo->snd_sid = hd.stream_id;
+        iov.iov_base = wb_.pos;
+        iov.iov_len = framelen;
       } else {
-          std::cerr << "### not enough data for complete frame ..." << std::endl;
+        std::cerr << "### not enough data for complete frame ..." << std::endl;
+        exit(EXIT_FAILURE);
       }
 
       ssize_t nwrite;

@@ -773,7 +773,7 @@ int HttpClient::read_clear() {
 #ifdef SCTP_ENABLED
 int HttpClient::read_clear_sctp() {
   ev_timer_again(loop, &rt);
-  
+
   std::array<uint8_t, 8_k> buf;
 
   nghttp2_frame_hd hd;
@@ -939,7 +939,9 @@ int HttpClient::write_clear_sctp() {
 
       if (iov[0].iov_len >= 24 + 9) {
         frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base + 24);
-        std::cerr << "sending magic frame + settings frame ..." << std::endl;
+        if (config.verbose) {
+          std::cerr << "sending magic frame + settings frame ..." << std::endl;
+        }
       } else {
         std::cerr << "### not enough data for magic frame ... implement me!" << std::endl;
         exit(EXIT_FAILURE);
