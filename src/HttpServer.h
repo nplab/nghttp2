@@ -224,6 +224,7 @@ private:
   const uint8_t *data_pending_;
   size_t data_pendinglen_;
   int fd_;
+  bool magic_received;
 };
 
 struct StatusPage {

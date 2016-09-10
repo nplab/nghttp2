@@ -550,6 +550,8 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
     write_ = &Http2Handler::write_clear;
 #endif
   }
+
+  magic_received = false;
 }
 
 Http2Handler::~Http2Handler() {
@@ -665,6 +667,8 @@ int Http2Handler::read_clear_sctp() {
   struct cmsghdr *scmsg;
   char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_rcvinfo))];
   struct sctp_rcvinfo *rcvinfo;
+  ssize_t nread;
+
   memset(cmsgbuf, 0, CMSG_SPACE(sizeof(struct sctp_rcvinfo)));
 
   /* Read more data into the buffer */
@@ -678,7 +682,6 @@ int Http2Handler::read_clear_sctp() {
   msg.msg_controllen = sizeof(cmsgbuf);
 
   for (;;) {
-    ssize_t nread;
     while ((nread = recvmsg(fd_, &msg, 0)) == -1 && errno == EINTR);
     if (nread == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -690,17 +693,30 @@ int Http2Handler::read_clear_sctp() {
       return -1;
     }
 
-    frame_unpack_frame_hd(&hd, buf.data());
-
-    scmsg = CMSG_FIRSTHDR(&msg);
-
-    if (scmsg == NULL) {
-        std::cerr << "somethings really wrong here.... " << std::endl;
+    if (magic_received)
+      frame_unpack_frame_hd(&hd, buf.data());
+    else if (nread >= 24){
+      frame_unpack_frame_hd(&hd, buf.data() + 24);
+      magic_received = true;
+    } else {
+      std::cerr << "something is really wrong here ... FIX ME!" << std::endl;
+      exit(EXIT_FAILURE);
     }
 
-    rcvinfo = (struct sctp_rcvinfo *)CMSG_DATA(scmsg);
+    scmsg = CMSG_FIRSTHDR(&msg);
+    if (scmsg == NULL) {
+        std::cerr << "something is really wrong here ... FIX ME!" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    rcvinfo = (struct sctp_rcvinfo *) CMSG_DATA(scmsg);
     std::cerr << "### incoming http2 frame - nread : " << nread << std::endl;
     std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
+
+    if (hd.stream_id != rcvinfo->rcv_sid) {
+      std::cerr << "http2/sctp stream mismatch ... FIX ME!" << std::endl;
+      exit(EXIT_FAILURE);
+    }
 
     if (get_config()->hexdump) {
       util::hexdump(stdout, buf.data(), nread);

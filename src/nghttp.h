@@ -207,6 +207,7 @@ struct HttpClient {
 
   int noop();
   int read_clear();
+  int read_clear_sctp();
   int write_clear();
   int write_clear_sctp();
   int connected();

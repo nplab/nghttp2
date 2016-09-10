@@ -606,10 +606,12 @@ int HttpClient::resolve_host(const std::string &host, uint16_t port) {
 int HttpClient::initiate_connection() {
   int rv;
 #ifdef SCTP_ENABLED
-  struct sctp_initmsg initmsg;    /* To signal die number of incoming and outgoing streams */
+  struct sctp_initmsg initmsg;    /* To signal the number of incoming and outgoing streams */
+  int val = 0;
 #endif // SCTP_ENABLED
   magic_sent = false;
   cur_addr = nullptr;
+
   while (next_addr) {
     cur_addr = next_addr;
     next_addr = next_addr->ai_next;
@@ -618,16 +620,23 @@ int HttpClient::initiate_connection() {
       continue;
     }
 
-    #ifdef SCTP_ENABLED
-        /* Ensure an appropriate number of stream will be negotated. */
-        initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
-        initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
-        initmsg.sinit_max_attempts = 0;   /* Use default */
-        initmsg.sinit_max_init_timeo = 0; /* Use default */
-        if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(initmsg)) < 0) {
-          exit(EXIT_FAILURE);
-        }
-    #endif // SCTP_ENABLED
+#ifdef SCTP_ENABLED
+    /* Ensure an appropriate number of stream will be negotated. */
+    memset(&initmsg, 0, sizeof(struct sctp_initmsg));
+    initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
+    initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
+    initmsg.sinit_max_attempts = 0;   /* Use default */
+    initmsg.sinit_max_init_timeo = 0; /* Use default */
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(struct sctp_initmsg)) < 0) {
+      exit(EXIT_FAILURE);
+    }
+
+    /* Enable RCVINFO delivery */
+    val = 1;
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
+      exit(EXIT_FAILURE);
+    }
+#endif // SCTP_ENABLED
 
     if (ssl_ctx) {
       // We are establishing TLS connection.
@@ -761,6 +770,70 @@ int HttpClient::read_clear() {
   return 0;
 }
 
+#ifdef SCTP_ENABLED
+int HttpClient::read_clear_sctp() {
+  std::array<uint8_t, 8_k> buf;
+
+  nghttp2_frame_hd hd;
+  struct msghdr msg;
+  struct iovec iov;
+  struct cmsghdr *scmsg;
+  char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_rcvinfo))];
+  struct sctp_rcvinfo *rcvinfo;
+  ssize_t nread;
+
+  memset(cmsgbuf, 0, CMSG_SPACE(sizeof(struct sctp_rcvinfo)));
+
+  /* Read more data into the buffer */
+  iov.iov_base = buf.data();
+  iov.iov_len = buf.size();
+  msg.msg_name = NULL;
+  msg.msg_namelen = 0;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = cmsgbuf;
+  msg.msg_controllen = sizeof(cmsgbuf);
+
+  for (;;) {
+    while ((nread = recvmsg(fd, &msg, 0)) == -1 && errno == EINTR);
+    if (nread == -1) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return 0;
+      }
+      return -1;
+    }
+    if (nread == 0) {
+      return -1;
+    }
+
+    frame_unpack_frame_hd(&hd, buf.data());
+
+    scmsg = CMSG_FIRSTHDR(&msg);
+    if (scmsg == NULL) {
+        std::cerr << "read_clear_sctp - CMSG_FIRSTHDR is NULL ... FIX ME!" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    rcvinfo = (struct sctp_rcvinfo *) CMSG_DATA(scmsg);
+    if (config.verbose) {
+      std::cerr << "### incoming http2 frame - nread : " << nread << std::endl;
+      std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
+    }
+
+    if (hd.stream_id != rcvinfo->rcv_sid) {
+      std::cerr << "http2/sctp stream mismatch ... FIX ME!" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+
+    if (on_readfn(*this, buf.data(), nread) != 0) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+#endif // SCTP_ENABLED
+
 int HttpClient::write_clear() {
   ev_timer_again(loop, &rt);
 
@@ -803,14 +876,17 @@ int HttpClient::write_clear_sctp() {
   ev_timer_again(loop, &rt);
 
   std::array<struct iovec, 2> iov;
+
   char* cmsgbuf[CMSG_SPACE(sizeof(struct sctp_sndinfo))];
-  struct sctp_sndinfo *sndinfo;
+  struct sctp_sndinfo *sndinfo = NULL;
   struct msghdr msghdr;
-  struct cmsghdr *cmsg;
+  struct cmsghdr *cmsg = NULL;
   nghttp2_frame_hd hd;
   size_t framelen = 0;
+  ssize_t nwrite = 0;
+  int iovcnt = 0;
 
-  /* initialize */
+  /* initialize sctp stuff */
   memset(cmsgbuf, 0, sizeof(cmsgbuf));
   memset(&msghdr, 0, sizeof(struct msghdr));
 
@@ -824,50 +900,61 @@ int HttpClient::write_clear_sctp() {
   sndinfo = (struct sctp_sndinfo*) CMSG_DATA(cmsg);
 
   for (;;) {
+
     if (on_writefn(*this) != 0) {
       return -1;
     }
 
-    auto iovcnt = wb.riovec(iov.data(), iov.size());
+    iovcnt = wb.riovec(iov.data(), iov.size());
 
     if (iovcnt == 0) {
       break;
     }
 
     if (magic_sent == true) {
-        /* check if we have a complete frame header in first iov */
-        if (iov[0].iov_len >= 9) {
-            frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base);
-            std::cerr << "### outgoing http2 frame - buffered total : " << wb.len << std::endl;
-            std::cerr << "iovstat - len : " << iovcnt << " - iov_len : " << iov[0].iov_len << std::endl;
-            std::cerr << "stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
-        } else {
-            std::cerr << "### not enough data for complete frame ... implement me!" << std::endl;
-            exit(EXIT_FAILURE);
-        }
+      /*
+       * Magic packet already sent - just add a frame
+       */
 
-        framelen = hd.length + 9;
-        sndinfo->snd_sid = hd.stream_id;
-    } else {
-        if (iov[0].iov_len >= 9) {
-            std::cerr << "sending magic frame ..." << std::endl;
-        } else {
-            std::cerr << "### not enough data for magic frame ... implement me!" << std::endl;
-            exit(EXIT_FAILURE);
+      if (iov[0].iov_len >= 9) {
+        frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base);
+        if (config.verbose) {
+          std::cerr << "### outgoing frame - buffered total : " << wb.len << std::endl;
+          //std::cerr << "iovstat - len : " << iovcnt << " - iov_len : " << iov[0].iov_len << std::endl;
+          std::cerr << "stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
         }
-        framelen = 24;
-        sndinfo->snd_sid = hd.stream_id;
-        magic_sent = true;
+      } else {
+        std::cerr << "### not enough data for frame ... implement error handling!!!" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+
+      framelen = 9 + hd.length;
+      sndinfo->snd_sid = hd.stream_id;
+    } else {
+      /*
+       * Send magic packet (24 bytes) and mandatory settings frame
+       */
+
+      if (iov[0].iov_len >= 24 + 9) {
+        frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base + 24);
+        std::cerr << "sending magic frame + settings frame ..." << std::endl;
+      } else {
+        std::cerr << "### not enough data for magic frame ... implement me!" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+      framelen = 24 + 9 + hd.length;
+      sndinfo->snd_sid = 0;
+      magic_sent = true;
     }
 
+    // one frame (aaaaand maybe a magic) per data-chunk - so limit to framelen
     iovcnt = limit_iovec(iov.data(), iovcnt, framelen);
 
     msghdr.msg_iov = iov.data();
     msghdr.msg_iovlen = iovcnt;
 
-    ssize_t nwrite;
     while ((nwrite = sendmsg(fd, &msghdr, 0)) == -1 && errno == EINTR);
-    //std::cerr << "sent bytes : " << nwrite << std::endl;
+
     if (nwrite == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         ev_io_start(loop, &wev);
@@ -876,7 +963,6 @@ int HttpClient::write_clear_sctp() {
       }
       return -1;
     }
-
     wb.drain(nwrite);
   }
 
@@ -947,7 +1033,7 @@ int HttpClient::connected() {
   }
 
 #ifdef SCTP_ENABLED
-  readfn = &HttpClient::read_clear;
+  readfn = &HttpClient::read_clear_sctp;
   writefn = &HttpClient::write_clear_sctp;
 #else
   readfn = &HttpClient::read_clear;
