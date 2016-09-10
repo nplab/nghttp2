@@ -1028,11 +1028,12 @@ int Client::read_clear_sctp() {
       std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
     }
 
+#ifdef SCTP_MULTISTREAM
     if (hd.stream_id != rcvinfo->rcv_sid) {
       std::cerr << "http2/sctp stream mismatch ... FIX ME!" << std::endl;
       exit(EXIT_FAILURE);
     }
-
+#endif // SCTP_MULTISTREAM
     if (on_read(buf, nread) != 0) {
       return -1;
     }
@@ -1132,7 +1133,11 @@ int Client::write_clear_sctp() {
       }
 
       framelen = 9 + hd.length;
+#ifdef SCTP_MULTISTREAM
       sndinfo->snd_sid = hd.stream_id;
+#else // SCTP_MULTISTREAM
+      sndinfo->snd_sid = 0;
+#endif // SCTP_MULTISTREAM
     } else {
       /*
        * Send magic packet (24 bytes) and mandatory settings frame

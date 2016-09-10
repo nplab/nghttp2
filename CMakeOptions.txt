@@ -25,4 +25,6 @@ option(WITH_MRUBY       "Use mruby")
 option(WITH_NEVERBLEED  "Use neverbleed")
 option(WITH_SCTP        "Use SCTP" ON)
 
+option(SCTP_MULTISTREAM "Use multiple SCTP streams" ON)
+
 # vim: ft=cmake:

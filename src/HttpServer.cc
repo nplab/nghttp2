@@ -726,10 +726,12 @@ int Http2Handler::read_clear_sctp() {
     }
 
     // checks : streams match?
+#ifdef SCTP_MULTISTREAM
     if (hd.stream_id != rcvinfo->rcv_sid) {
       std::cerr << "read_clear_sctp - http2/sctp stream mismatch ... FIX ME!" << std::endl;
       exit(EXIT_FAILURE);
     }
+#endif //SCTP_MULTISTREAM
 
     if (get_config()->hexdump) {
       util::hexdump(stdout, buf.data(), nread);
@@ -831,7 +833,11 @@ int Http2Handler::write_clear_sctp() {
         }
 
         framelen = hd.length + 9;
+#ifdef SCTP_MULTISTREAM
         sndinfo->snd_sid = hd.stream_id;
+#else // SCTP_MULTISTREAM
+        sndinfo->snd_sid = 0;
+#endif
         iov.iov_base = wb_.pos;
         iov.iov_len = framelen;
       } else {

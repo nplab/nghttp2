@@ -270,3 +270,7 @@ if(WITH_SCTP)
     message(fatal_error "SCTP support enabled but not available")
   endif()
 endif()
+
+if(SCTP_MULTISTREAM)
+  add_definitions(-DSCTP_MULTISTREAM)
+endif()
