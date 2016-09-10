@@ -208,6 +208,7 @@ struct HttpClient {
   int noop();
   int read_clear();
   int write_clear();
+  int write_clear_sctp();
   int connected();
   int tls_handshake();
   int read_tls();
@@ -236,6 +237,9 @@ struct HttpClient {
   void record_start_time();
   void record_domain_lookup_end_time();
   void record_connect_end_time();
+
+  void frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
+  uint32_t get_uint32(const uint8_t *data);
 
 #ifdef HAVE_JANSSON
   void output_har(FILE *outfile);
@@ -280,6 +284,7 @@ struct HttpClient {
   // The HTTP status code of the response message of HTTP Upgrade.
   unsigned int upgrade_response_status_code;
   int fd;
+  bool magic_sent;
   // true if the response message of HTTP Upgrade request is fully
   // received. It is not relevant the upgrade succeeds, or not.
   bool upgrade_response_complete;

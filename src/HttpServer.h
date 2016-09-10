@@ -195,6 +195,7 @@ public:
   int fill_wb();
 
   int read_clear();
+  int read_clear_sctp();
   int write_clear();
   int write_clear_sctp();
   void frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
@@ -223,7 +224,6 @@ private:
   const uint8_t *data_pending_;
   size_t data_pendinglen_;
   int fd_;
-  size_t frame_offset_;
 };
 
 struct StatusPage {

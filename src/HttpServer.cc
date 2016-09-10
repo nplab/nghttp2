@@ -542,10 +542,11 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
     read_ = &Http2Handler::tls_handshake;
     write_ = &Http2Handler::tls_handshake;
   } else {
-    read_ = &Http2Handler::read_clear;
 #ifdef SCTP_ENABLED
+    read_ = &Http2Handler::read_clear_sctp;
     write_ = &Http2Handler::write_clear_sctp;
 #else // SCTP_ENABLED
+    read_ = &Http2Handler::read_clear;
     write_ = &Http2Handler::write_clear;
 #endif
   }
@@ -653,6 +654,72 @@ int Http2Handler::read_clear() {
   return write_(*this);
 }
 
+#ifdef SCTP_ENABLED
+int Http2Handler::read_clear_sctp() {
+  int rv;
+  std::array<uint8_t, 8_k> buf;
+
+  nghttp2_frame_hd hd;
+  struct msghdr msg;
+  struct iovec iov;
+  struct cmsghdr *scmsg;
+  char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_rcvinfo))];
+  struct sctp_rcvinfo *rcvinfo;
+  memset(cmsgbuf, 0, CMSG_SPACE(sizeof(struct sctp_rcvinfo)));
+
+  /* Read more data into the buffer */
+  iov.iov_base = buf.data();
+  iov.iov_len = buf.size();
+  msg.msg_name = NULL;
+  msg.msg_namelen = 0;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = cmsgbuf;
+  msg.msg_controllen = sizeof(cmsgbuf);
+
+  for (;;) {
+    ssize_t nread;
+    while ((nread = recvmsg(fd_, &msg, 0)) == -1 && errno == EINTR);
+    if (nread == -1) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      }
+      return -1;
+    }
+    if (nread == 0) {
+      return -1;
+    }
+
+    frame_unpack_frame_hd(&hd, buf.data());
+
+    scmsg = CMSG_FIRSTHDR(&msg);
+
+    if (scmsg == NULL) {
+        std::cerr << "somethings really wrong here.... " << std::endl;
+    }
+
+    rcvinfo = (struct sctp_rcvinfo *)CMSG_DATA(scmsg);
+    std::cerr << "### incoming http2 frame - nread : " << nread << std::endl;
+    std::cerr << "stream h/s : " << hd.stream_id << "/" << rcvinfo->rcv_sid << " - length : " << hd.length << std::endl;
+
+    if (get_config()->hexdump) {
+      util::hexdump(stdout, buf.data(), nread);
+    }
+
+    rv = nghttp2_session_mem_recv(session_, buf.data(), nread);
+    if (rv < 0) {
+      if (rv != NGHTTP2_ERR_BAD_CLIENT_MAGIC) {
+        std::cerr << "nghttp2_session_mem_recv() returned error: "
+                  << nghttp2_strerror(rv) << std::endl;
+      }
+      return -1;
+    }
+  }
+
+  return write_(*this);
+}
+#endif // SCTP_ENABLED
+
 int Http2Handler::write_clear() {
   auto loop = sessions_->get_loop();
   for (;;) {
@@ -694,6 +761,7 @@ int Http2Handler::write_clear() {
   return 0;
 }
 
+#ifdef SCTP_ENABLED
 int Http2Handler::write_clear_sctp() {
   auto loop = sessions_->get_loop();
   nghttp2_frame_hd hd;
@@ -727,9 +795,9 @@ int Http2Handler::write_clear_sctp() {
     if (wb_.rleft() > 0) {
 
       if (wb_.rleft() >= 9) {
-          std::cerr << "### parsing http2 frame - bufferd : " << wb_.rleft() << std::endl;
+          std::cerr << "### outgoing http2 frame - buffered total : " << wb_.rleft() << std::endl;
           frame_unpack_frame_hd(&hd, wb_.pos);
-          std::cerr << "Stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+          std::cerr << "stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
           framelen = hd.length + 9;
 
           sndinfo->snd_sid = hd.stream_id;
@@ -740,9 +808,7 @@ int Http2Handler::write_clear_sctp() {
       }
 
       ssize_t nwrite;
-      while ((nwrite = sendmsg(fd_, &msghdr, 0)) == -1 &&
-             errno == EINTR)
-        ;
+      while ((nwrite = sendmsg(fd_, &msghdr, 0)) == -1 && errno == EINTR);
       if (nwrite == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           ev_io_start(loop, &wev_);
@@ -789,6 +855,7 @@ uint32_t Http2Handler::get_uint32(const uint8_t *data) {
   memcpy(&n, data, sizeof(uint32_t));
   return ntohl(n);
 }
+#endif // SCTP_ENABLED
 
 int Http2Handler::tls_handshake() {
   ev_io_stop(sessions_->get_loop(), &wev_);
@@ -2097,6 +2164,7 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
 #ifdef SCTP_ENABLED
   struct sctp_initmsg initmsg;    /* To signal die number of incoming and outgoing streams */
 #endif // SCTP_ENABLED
+  int val;
   std::shared_ptr<AcceptHandler> acceptor;
   auto service = util::utos(config->port);
 
@@ -2127,7 +2195,8 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
     if (fd == -1) {
       continue;
     }
-    int val = 1;
+
+    val = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val,
                    static_cast<socklen_t>(sizeof(val))) == -1) {
       close(fd);
@@ -2151,6 +2220,12 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
     initmsg.sinit_max_attempts = 0;   /* Use default */
     initmsg.sinit_max_init_timeo = 0; /* Use default */
     if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(initmsg)) < 0) {
+      exit(EXIT_FAILURE);
+    }
+
+    /* Enable RCVINFO delivery */
+    val = 1;
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
       exit(EXIT_FAILURE);
     }
 #endif // SCTP_ENABLED
