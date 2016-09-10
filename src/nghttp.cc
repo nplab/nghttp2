@@ -609,7 +609,6 @@ int HttpClient::initiate_connection() {
   struct sctp_initmsg initmsg;    /* To signal the number of incoming and outgoing streams */
   int val = 0;
 #endif // SCTP_ENABLED
-  magic_sent = false;
   cur_addr = nullptr;
 
   while (next_addr) {
@@ -686,6 +685,7 @@ int HttpClient::initiate_connection() {
   if (fd == -1) {
     return -1;
   }
+  magic_sent = false;
 
   writefn = &HttpClient::connected;
 
@@ -772,6 +772,8 @@ int HttpClient::read_clear() {
 
 #ifdef SCTP_ENABLED
 int HttpClient::read_clear_sctp() {
+  ev_timer_again(loop, &rt);
+  
   std::array<uint8_t, 8_k> buf;
 
   nghttp2_frame_hd hd;
