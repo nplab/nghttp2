@@ -860,21 +860,39 @@ int make_socket_nodelay(int fd) {
 
 int create_nonblock_socket(int family) {
 #ifdef SOCK_NONBLOCK
-#ifdef SCTP_ENABLED
-  auto fd = socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_SCTP);
-#else // SCTP_ENABLED
   auto fd = socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-#endif // SCTP_ENABLED
 
   if (fd == -1) {
     return -1;
   }
 #else  // !SOCK_NONBLOCK
-#ifdef SCTP_ENABLED
-  auto fd = socket(family, SOCK_STREAM, IPPROTO_SCTP);
-#else // SCTP_ENABLED
   auto fd = socket(family, SOCK_STREAM, 0);
-#endif // SCTP_ENABLED
+
+  if (fd == -1) {
+    return -1;
+  }
+
+  make_socket_nonblocking(fd);
+  make_socket_closeonexec(fd);
+#endif // !SOCK_NONBLOCK
+
+  if (family == AF_INET || family == AF_INET6) {
+    make_socket_nodelay(fd);
+  }
+
+  return fd;
+}
+
+int create_nonblock_socket_sctp(int family) {
+#ifdef SOCK_NONBLOCK
+  auto fd = socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_SCTP);
+
+  if (fd == -1) {
+    return -1;
+  }
+#else  // !SOCK_NONBLOCK
+  auto fd = socket(family, SOCK_STREAM, IPPROTO_SCTP);
+
   if (fd == -1) {
     return -1;
   }

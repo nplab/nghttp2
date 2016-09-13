@@ -571,6 +571,7 @@ int make_socket_nonblocking(int fd);
 int make_socket_nodelay(int fd);
 
 int create_nonblock_socket(int family);
+int create_nonblock_socket_sctp(int family);
 
 bool check_socket_connected(int fd);
 

@@ -101,6 +101,7 @@ struct Config {
   uint16_t port;
   uint16_t default_port;
   bool verbose;
+  bool sctp;
   bool timing_script;
   std::string base_uri;
   // true if UNIX domain socket is used.  In this case, base_uri is

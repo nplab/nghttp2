@@ -102,6 +102,7 @@ Config::Config()
       port(0),
       default_port(0),
       verbose(false),
+      sctp(false),
       timing_script(false),
       base_uri_unix(false),
       unix_addr{} {}
@@ -379,7 +380,13 @@ int Client::make_socket(addrinfo *addr) {
   struct sctp_initmsg initmsg;    /* To signal the number of incoming and outgoing streams */
   int val = 0;
 #endif // SCTP_ENABLED
-  fd = util::create_nonblock_socket(addr->ai_family);
+  if (config.sctp) {
+    fd = util::create_nonblock_socket_sctp(addr->ai_family);
+    std::cerr << "using SCTP" << std::endl;
+  } else {
+    fd = util::create_nonblock_socket(addr->ai_family);
+    std::cerr << "using TCP" << std::endl;
+  }
   if (fd == -1) {
     return -1;
   }
@@ -399,23 +406,24 @@ int Client::make_socket(addrinfo *addr) {
   }
 
 #ifdef SCTP_ENABLED
-  /* Ensure an appropriate number of stream will be negotated. */
-  memset(&initmsg, 0, sizeof(struct sctp_initmsg));
-  initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
-  initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
-  initmsg.sinit_max_attempts = 0;   /* Use default */
-  initmsg.sinit_max_init_timeo = 0; /* Use default */
-  if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(struct sctp_initmsg)) < 0) {
-    exit(EXIT_FAILURE);
-  }
+  if (config.sctp) {
+    /* Ensure an appropriate number of stream will be negotated. */
+    memset(&initmsg, 0, sizeof(struct sctp_initmsg));
+    initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
+    initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
+    initmsg.sinit_max_attempts = 0;   /* Use default */
+    initmsg.sinit_max_init_timeo = 0; /* Use default */
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(struct sctp_initmsg)) < 0) {
+      exit(EXIT_FAILURE);
+    }
 
-  /* Enable RCVINFO delivery */
-  val = 1;
-  if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
-    exit(EXIT_FAILURE);
+    /* Enable RCVINFO delivery */
+    val = 1;
+    if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
+      exit(EXIT_FAILURE);
+    }
   }
 #endif // SCTP_ENABLED
-
 
   auto rv = ::connect(fd, addr->ai_addr, addr->ai_addrlen);
   if (rv != 0 && errno != EINPROGRESS) {
@@ -1208,10 +1216,14 @@ int Client::connected() {
 
     return do_write();
   }
-
 #ifdef SCTP_ENABLED
-  readfn = &Client::read_clear_sctp;
-  writefn = &Client::write_clear_sctp;
+  if (config.sctp) {
+    readfn = &Client::read_clear_sctp;
+    writefn = &Client::write_clear_sctp;
+  } else {
+    readfn = &Client::read_clear;
+    writefn = &Client::write_clear;
+  }
 #else
   readfn = &Client::read_clear;
   writefn = &Client::write_clear;
@@ -2022,9 +2034,10 @@ int main(int argc, char **argv) {
         {"npn-list", required_argument, &flag, 4},
         {"rate-period", required_argument, &flag, 5},
         {"h1", no_argument, &flag, 6},
+        {"sctp", no_argument, nullptr, 'S'},
         {nullptr, 0, nullptr, 0}};
     int option_index = 0;
-    auto c = getopt_long(argc, argv, "hvW:c:d:m:n:p:t:w:H:i:r:T:N:B:",
+    auto c = getopt_long(argc, argv, "hvW:c:d:m:n:p:t:w:H:i:r:T:N:SB:",
                          long_options, &option_index);
     if (c == -1) {
       break;
@@ -2182,6 +2195,9 @@ int main(int argc, char **argv) {
     }
     case 'v':
       config.verbose = true;
+      break;
+    case 'S':
+      config.sctp = true;
       break;
     case 'h':
       print_help(std::cout);

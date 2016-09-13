@@ -119,7 +119,8 @@ Config::Config()
       no_dep(false),
       hexdump(false),
       no_push(false),
-      expect_continue(false) {
+      expect_continue(false),
+      sctp(false) {
   nghttp2_option_new(&http2_option);
   nghttp2_option_set_peer_max_concurrent_streams(http2_option,
                                                  peer_max_concurrent_streams);
@@ -614,33 +615,40 @@ int HttpClient::initiate_connection() {
   while (next_addr) {
     cur_addr = next_addr;
     next_addr = next_addr->ai_next;
-    fd = util::create_nonblock_socket(cur_addr->ai_family);
+    if (config.sctp) {
+      fd = util::create_nonblock_socket_sctp(cur_addr->ai_family);
+      std::cerr << "using SCTP" << std::endl;
+    } else {
+      fd = util::create_nonblock_socket(cur_addr->ai_family);
+      std::cerr << "using TCP" << std::endl;
+    }
     if (fd == -1) {
       continue;
     }
 
 #ifdef SCTP_ENABLED
-    /* Ensure an appropriate number of stream will be negotated. */
-    memset(&initmsg, 0, sizeof(struct sctp_initmsg));
-    initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
-    initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
-    initmsg.sinit_max_attempts = 0;   /* Use default */
-    initmsg.sinit_max_init_timeo = 0; /* Use default */
-    if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(struct sctp_initmsg)) < 0) {
-      exit(EXIT_FAILURE);
-    }
+    if (config.sctp) {
+      /* Ensure an appropriate number of stream will be negotated. */
+      memset(&initmsg, 0, sizeof(struct sctp_initmsg));
+      initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
+      initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
+      initmsg.sinit_max_attempts = 0;   /* Use default */
+      initmsg.sinit_max_init_timeo = 0; /* Use default */
+      if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(struct sctp_initmsg)) < 0) {
+        exit(EXIT_FAILURE);
+      }
 
-    /* Enable RCVINFO delivery */
-    val = 1;
-    if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
-      exit(EXIT_FAILURE);
-    }
+      /* Enable RCVINFO delivery */
+      val = 1;
+      if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
+        exit(EXIT_FAILURE);
+      }
 
-    val = 1;
-    if (setsockopt(fd, IPPROTO_SCTP, SCTP_NODELAY, (char*) &val, sizeof(val)) < 0) {
-      exit(EXIT_FAILURE);
+      val = 1;
+      if (setsockopt(fd, IPPROTO_SCTP, SCTP_NODELAY, (char*) &val, sizeof(val)) < 0) {
+        exit(EXIT_FAILURE);
+      }
     }
-
 #endif // SCTP_ENABLED
 
     if (ssl_ctx) {
@@ -1061,8 +1069,13 @@ int HttpClient::connected() {
   }
 
 #ifdef SCTP_ENABLED
-  readfn = &HttpClient::read_clear_sctp;
-  writefn = &HttpClient::write_clear_sctp;
+  if (config.sctp) {
+    readfn = &HttpClient::read_clear_sctp;
+    writefn = &HttpClient::write_clear_sctp;
+  } else {
+    readfn = &HttpClient::read_clear;
+    writefn = &HttpClient::write_clear;
+  }
 #else
   readfn = &HttpClient::read_clear;
   writefn = &HttpClient::write_clear;
@@ -2926,6 +2939,7 @@ int main(int argc, char **argv) {
         {"header-table-size", required_argument, nullptr, 'c'},
         {"padding", required_argument, nullptr, 'b'},
         {"har", required_argument, nullptr, 'r'},
+        {"sctp", no_argument, nullptr, 'S'},
         {"cert", required_argument, &flag, 1},
         {"key", required_argument, &flag, 2},
         {"color", no_argument, &flag, 3},
@@ -2940,7 +2954,7 @@ int main(int argc, char **argv) {
         {"expect-continue", no_argument, &flag, 13},
         {nullptr, 0, nullptr, 0}};
     int option_index = 0;
-    int c = getopt_long(argc, argv, "M:Oab:c:d:gm:np:r:hH:vst:uw:W:",
+    int c = getopt_long(argc, argv, "M:Oab:c:d:gm:np:r:hH:vsSt:uw:W:",
                         long_options, &option_index);
     if (c == -1) {
       break;
@@ -3065,6 +3079,9 @@ int main(int argc, char **argv) {
       }
       config.min_header_table_size =
           std::min(config.min_header_table_size, config.header_table_size);
+      break;
+    case 'S':
+      config.sctp = true;
       break;
     case '?':
       util::show_candidates(argv[optind - 1], long_options);

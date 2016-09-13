@@ -526,6 +526,10 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
       data_pending_(nullptr),
       data_pendinglen_(0),
       fd_(fd) {
+
+  int optval;
+  socklen_t optlen;
+
   ev_timer_init(&settings_timerev_, settings_timeout_cb, 10., 0.);
   ev_io_init(&wev_, writecb, fd, EV_WRITE);
   ev_io_init(&rev_, readcb, fd, EV_READ);
@@ -542,13 +546,25 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
     read_ = &Http2Handler::tls_handshake;
     write_ = &Http2Handler::tls_handshake;
   } else {
+    // TCP? SCTP?
 #ifdef SCTP_ENABLED
-    read_ = &Http2Handler::read_clear_sctp;
-    write_ = &Http2Handler::write_clear_sctp;
+    getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &optval, &optlen);
+    if (optval == 0) {
+        std::cerr << "getsockopt failed!" << std::endl;
+    }
+
+    if (optval == IPPROTO_SCTP) {
+      read_ = &Http2Handler::read_clear_sctp;
+      write_ = &Http2Handler::write_clear_sctp;
+    } else {
+      read_ = &Http2Handler::read_clear;
+      write_ = &Http2Handler::write_clear;
+    }
 #else // SCTP_ENABLED
     read_ = &Http2Handler::read_clear;
     write_ = &Http2Handler::write_clear;
 #endif
+
   }
 
   magic_received = false;
@@ -2225,7 +2241,7 @@ int verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
 
 namespace {
 int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
-                 const Config *config) {
+                 const Config *config, bool sctp) {
   int r;
   bool ok = false;
   const char *addr = nullptr;
@@ -2241,7 +2257,9 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_flags = AI_PASSIVE;
 #ifdef SCTP_ENABLED
-  hints.ai_protocol = IPPROTO_SCTP;
+  if (sctp) {
+    hints.ai_protocol = IPPROTO_SCTP;
+  }
 #endif // SCTP_ENABLED
 #ifdef AI_ADDRCONFIG
   hints.ai_flags |= AI_ADDRCONFIG;
@@ -2282,25 +2300,27 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
 #endif // IPV6_V6ONLY
 
 #ifdef SCTP_ENABLED
-    /* Ensure an appropriate number of stream will be negotated. */
-    initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
-    initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
-    initmsg.sinit_max_attempts = 0;   /* Use default */
-    initmsg.sinit_max_init_timeo = 0; /* Use default */
-    if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(initmsg)) < 0) {
-      exit(EXIT_FAILURE);
-    }
+    if (sctp) {
+      /* Ensure an appropriate number of stream will be negotated. */
+      initmsg.sinit_num_ostreams = MAX_SCTP_STREAMS;
+      initmsg.sinit_max_instreams = MAX_SCTP_STREAMS;
+      initmsg.sinit_max_attempts = 0;   /* Use default */
+      initmsg.sinit_max_init_timeo = 0; /* Use default */
+      if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg, sizeof(initmsg)) < 0) {
+        exit(EXIT_FAILURE);
+      }
 
-    /* Enable RCVINFO delivery */
-    val = 1;
-    if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
-      exit(EXIT_FAILURE);
-    }
+      /* Enable RCVINFO delivery */
+      val = 1;
+      if (setsockopt(fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, (char*) &val, sizeof(val)) < 0) {
+        exit(EXIT_FAILURE);
+      }
 
-    /* No delay */
-    val = 1;
-    if (setsockopt(fd, IPPROTO_SCTP, SCTP_NODELAY, (char*) &val, sizeof(val)) < 0) {
-      exit(EXIT_FAILURE);
+      /* No delay */
+      val = 1;
+      if (setsockopt(fd, IPPROTO_SCTP, SCTP_NODELAY, (char*) &val, sizeof(val)) < 0) {
+        exit(EXIT_FAILURE);
+      }
     }
 #endif // SCTP_ENABLED
 
@@ -2312,7 +2332,10 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
 
       if (config->verbose) {
         std::string s = util::numeric_name(rp->ai_addr, rp->ai_addrlen);
-        std::cout << (rp->ai_family == AF_INET ? "IPv4" : "IPv6") << ": listen "
+        std::cout << (rp->ai_family == AF_INET ? "IPv4" : "IPv6")
+                  << ":"
+                  << (rp->ai_protocol == IPPROTO_SCTP ? "SCTP " : "TCP  ")
+                  << ": listen "
                   << s << ":" << config->port << std::endl;
       }
       ok = true;
@@ -2461,13 +2484,23 @@ int HttpServer::run() {
   auto loop = EV_DEFAULT;
 
   Sessions sessions(this, loop, config_, ssl_ctx);
-  if (start_listen(this, loop, &sessions, config_) != 0) {
-    std::cerr << "Could not listen" << std::endl;
+  if (start_listen(this, loop, &sessions, config_, false) != 0) {
+    std::cerr << "Could not listen - TCP" << std::endl;
     if (ssl_ctx) {
       SSL_CTX_free(ssl_ctx);
     }
     return -1;
   }
+
+#ifdef SCTP_ENABLED
+  if (start_listen(this, loop, &sessions, config_, true) != 0) {
+    std::cerr << "Could not listen - SCTP" << std::endl;
+    /*if (ssl_ctx) {
+      SSL_CTX_free(ssl_ctx);
+    }*/
+    return -1;
+  }
+#endif
 
   ev_run(loop, 0);
   return 0;
