@@ -548,17 +548,21 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
   } else {
     // TCP? SCTP?
 #ifdef SCTP_ENABLED
-    getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &optval, &optlen);
-    if (optval == 0) {
+
+    if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &optval, &optlen)) {
         std::cerr << "getsockopt failed!" << std::endl;
+        exit(EXIT_FAILURE);
     }
 
     if (optval == IPPROTO_SCTP) {
       read_ = &Http2Handler::read_clear_sctp;
       write_ = &Http2Handler::write_clear_sctp;
-    } else {
+    } else if (optval == IPPROTO_TCP){
       read_ = &Http2Handler::read_clear;
       write_ = &Http2Handler::write_clear;
+    } else {
+      std::cerr << "getsockopt returned unknown protocol : " << optval << std::endl;
+      exit(EXIT_FAILURE);
     }
 #else // SCTP_ENABLED
     read_ = &Http2Handler::read_clear;
