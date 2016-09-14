@@ -68,7 +68,6 @@
 #endif // O_BINARY
 
 #define MAX_SCTP_STREAMS 2048
-#define NGHTTP2_STREAM_ID_MASK ((1u << 31) - 1)
 
 namespace nghttp2 {
 
@@ -823,7 +822,7 @@ int HttpClient::read_clear_sctp() {
     }
 
     // unpack header
-    frame_unpack_frame_hd(&hd, buf.data());
+    frame_unpack_frame_hd(&hd, buf.data(), config.verbose);
 
     scmsg = CMSG_FIRSTHDR(&msg);
     if (scmsg == NULL) {
@@ -942,7 +941,7 @@ int HttpClient::write_clear_sctp() {
        * Magic packet already sent - just add a frame
        */
       if (iov[0].iov_len >= 9) {
-        frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base);
+        frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base, config.verbose);
         if (config.verbose) {
           std::cerr << "### outgoing frame - buffered total : " << wb.len << std::endl;
           //std::cerr << "iovstat - len : " << iovcnt << " - iov_len : " << iov[0].iov_len << std::endl;
@@ -1006,20 +1005,6 @@ int HttpClient::write_clear_sctp() {
   ev_timer_stop(loop, &wt);
 
   return 0;
-}
-
-void HttpClient::frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf) {
-  hd->length = get_uint32(&buf[0]) >> 8;
-  hd->type = buf[3];
-  hd->flags = buf[4];
-  hd->stream_id = get_uint32(&buf[5]) & NGHTTP2_STREAM_ID_MASK;
-  hd->reserved = 0;
-}
-
-uint32_t HttpClient::get_uint32(const uint8_t *data) {
-  uint32_t n;
-  memcpy(&n, data, sizeof(uint32_t));
-  return ntohl(n);
 }
 #endif // SCTP_ENABLED
 

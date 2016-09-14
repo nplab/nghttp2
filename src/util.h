@@ -52,6 +52,7 @@
 #include "template.h"
 #include "network.h"
 #include "allocator.h"
+#include <nghttp2/nghttp2.h>
 
 namespace nghttp2 {
 
@@ -691,6 +692,10 @@ uint32_t hash32(const StringRef &s);
 // Computes SHA-256 of |s|, and stores it in |buf|.  This function
 // returns 0 if it succeeds, or -1.
 int sha256(uint8_t *buf, const StringRef &s);
+
+#ifdef SCTP_ENABLED
+bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbose);
+#endif
 
 } // namespace util
 

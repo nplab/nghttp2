@@ -375,7 +375,7 @@ struct Client {
 
   void signal_write();
 
-  void frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
+  bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
   uint32_t get_uint32(const uint8_t *data);
 };
 

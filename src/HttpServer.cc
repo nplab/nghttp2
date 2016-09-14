@@ -70,7 +70,6 @@
 #define O_BINARY (0)
 #endif // O_BINARY
 
-#define NGHTTP2_STREAM_ID_MASK ((1u << 31) - 1)
 #define MAX_SCTP_STREAMS 2048
 
 namespace nghttp2 {
@@ -931,19 +930,6 @@ int Http2Handler::write_clear_sctp() {
   return 0;
 }
 
-void Http2Handler::frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf) {
-  hd->length = get_uint32(&buf[0]) >> 8;
-  hd->type = buf[3];
-  hd->flags = buf[4];
-  hd->stream_id = get_uint32(&buf[5]) & NGHTTP2_STREAM_ID_MASK;
-  hd->reserved = 0;
-}
-
-uint32_t Http2Handler::get_uint32(const uint8_t *data) {
-  uint32_t n;
-  memcpy(&n, data, sizeof(uint32_t));
-  return ntohl(n);
-}
 #endif // SCTP_ENABLED
 
 int Http2Handler::tls_handshake() {

@@ -61,6 +61,8 @@
 #include "ssl_compat.h"
 #include "timegm.h"
 
+#define NGHTTP2_STREAM_ID_MASK ((1u << 31) - 1)
+
 namespace nghttp2 {
 
 namespace util {
@@ -1415,6 +1417,137 @@ int sha256(uint8_t *res, const StringRef &s) {
 
   return 0;
 }
+
+#ifdef SCTP_ENABLED
+bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbose) {
+
+  hd->length = get_uint32(&buf[0]) >> 8;
+  hd->type = buf[3];
+  hd->flags = buf[4];
+  hd->stream_id = get_uint32(&buf[5]) & NGHTTP2_STREAM_ID_MASK;
+  hd->reserved = 0;
+
+  /* Make some plausibility checks */
+
+  /* ToDo: may be negotiated for a bigger size */
+  if (hd->length > 16384) {
+    std::cerr << "ERROR: frame - size > 16384" << std::endl;
+    return false;
+  }
+
+  switch (hd->type) {
+    /**
+     * The DATA frame.
+     */
+    case NGHTTP2_DATA:
+      if (verbose) {
+        std::cerr << "frame - type : DATA" << std::endl;
+      }
+      break;
+
+    /**
+     * The HEADERS frame.
+     */
+    case NGHTTP2_HEADERS:
+      if (verbose) {
+        std::cerr << "frame - type : HEADERS" << std::endl;
+      }
+      break;
+
+    /**
+     * The PRIORITY frame.
+     */
+    case NGHTTP2_PRIORITY:
+      if (verbose) {
+        std::cerr << "frame - type : PRIORITY" << std::endl;
+      }
+      break;
+
+    /**
+     * The RST_STREAM frame.
+     */
+    case NGHTTP2_RST_STREAM:
+      if (verbose) {
+        std::cerr << "frame - type : RST_STREAM" << std::endl;
+      }
+      break;
+
+    /**
+     * The SETTINGS frame.
+     */
+    case NGHTTP2_SETTINGS:
+      if (verbose) {
+        std::cerr << "frame - type : NGHTTP2_SETTINGS" << std::endl;
+      }
+      break;
+
+    /**
+     * The PUSH_PROMISE frame.
+     */
+    case NGHTTP2_PUSH_PROMISE:
+      if (verbose) {
+        std::cerr << "frame - type : NGHTTP2_PUSH_PROMISE" << std::endl;
+      }
+      break;
+
+    /**
+     * The PING frame.
+     */
+    case NGHTTP2_PING:
+      if (verbose) {
+        std::cerr << "frame - type : NGHTTP2_PING" << std::endl;
+      }
+      break;
+
+    /**
+     * The GOAWAY frame.
+     */
+    case NGHTTP2_GOAWAY:
+      if (verbose) {
+        std::cerr << "frame - type : NGHTTP2_GOAWAY" << std::endl;
+      }
+      break;
+
+    /**
+     * The WINDOW_UPDATE frame.
+     */
+    case NGHTTP2_WINDOW_UPDATE:
+      if (verbose) {
+        std::cerr << "frame - type : NGHTTP2_WINDOW_UPDATE" << std::endl;
+      }
+      break;
+
+    /**
+     * The CONTINUATION frame.  This frame type won't be passed to any
+     * callbacks because the library processes this frame type and its
+     * preceding HEADERS/PUSH_PROMISE as a single frame.
+     */
+    case NGHTTP2_CONTINUATION:
+      if (verbose) {
+        std::cerr << "frame - type : NGHTTP2_CONTINUATION" << std::endl;
+      }
+      break;
+
+    /**
+     * The ALTSVC frame, which is defined in `RFC 7383
+     * <https://tools.ietf.org/html/rfc7838#section-4>`_.
+     */
+    case NGHTTP2_ALTSVC:
+      if (verbose) {
+        std::cerr << "frame - type : NGHTTP2_ALTSVC" << std::endl;
+      }
+      break;
+
+    default:
+      std::cerr << "ERROR: frame - type : UNKNOWN" << std::endl;
+      return false;
+  }
+
+  return true;
+
+}
+
+#endif // SCTP_ENABLED
 
 } // namespace util
 
