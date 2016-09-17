@@ -528,7 +528,7 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
       fd_(fd) {
 
   int optval;
-  socklen_t optlen;
+  socklen_t optlen = sizeof(optval);
 
   ev_timer_init(&settings_timerev_, settings_timeout_cb, 10., 0.);
   ev_io_init(&wev_, writecb, fd, EV_WRITE);
@@ -550,7 +550,7 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
 #ifdef SCTP_ENABLED
 
     if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &optval, &optlen)) {
-        std::cerr << "getsockopt failed!" << std::endl;
+        std::cerr << "getsockopt for " << fd << "failed - errno : " << errno << " - " << strerror(errno) << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -561,6 +561,7 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
       read_ = &Http2Handler::read_clear;
       write_ = &Http2Handler::write_clear;
     } else {
+      std::cerr << "fd : " << fd << " - optval : " << optval << std::endl;
       std::cerr << "getsockopt returned unknown protocol : " << optval << std::endl;
       exit(EXIT_FAILURE);
     }
