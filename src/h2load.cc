@@ -382,10 +382,8 @@ int Client::make_socket(addrinfo *addr) {
 #endif // SCTP_ENABLED
   if (config.sctp) {
     fd = util::create_nonblock_socket_sctp(addr->ai_family);
-    std::cerr << "using SCTP" << std::endl;
   } else {
     fd = util::create_nonblock_socket(addr->ai_family);
-    std::cerr << "using TCP" << std::endl;
   }
   if (fd == -1) {
     return -1;
@@ -1024,6 +1022,11 @@ int Client::read_clear_sctp() {
 
     frame_unpack_frame_hd(&hd, buf);
 
+    if (hd.length + 9 != nread) {
+	std::cout << "nread : " << nread << " - hd.length : " << hd.length << std::endl;
+	exit(EXIT_FAILURE);
+    }
+
     scmsg = CMSG_FIRSTHDR(&msg);
     if (scmsg == NULL) {
         std::cerr << "read_clear_sctp - CMSG_FIRSTHDR is NULL ... FIX ME!" << std::endl;
@@ -1172,6 +1175,11 @@ int Client::write_clear_sctp() {
     msghdr.msg_iovlen = iovcnt;
 
     while ((nwrite = sendmsg(fd, &msghdr, 0)) == -1 && errno == EINTR);
+    
+    if (nwrite != framelen) {
+      std::cerr << "could not write full message ..." << std::endl;
+      exit(EXIT_FAILURE);
+    }
 
     if (nwrite == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -2752,8 +2760,11 @@ time for request: )" << std::setw(10) << util::format_duration(ts.request.min)
             << std::setw(10) << ts.rps.max << "  " << std::setw(10)
             << ts.rps.mean << "  " << std::setw(10) << ts.rps.sd << std::setw(9)
             << util::dtos(ts.rps.within_sd) << "%" << std::endl;
-
-  SSL_CTX_free(ssl_ctx);
+  std::cerr << ts.request.mean << ","
+            << ts.connect.mean << ","
+            << ts.ttfb.mean << std::endl;
+  
+SSL_CTX_free(ssl_ctx);
 
   return 0;
 }
