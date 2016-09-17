@@ -718,14 +718,14 @@ int Http2Handler::read_clear_sctp() {
       frame_unpack_frame_hd(&hd, buf.data());
       // checks : sizes match?
       if (nread != (hd.length + 9)) {
-        std::cerr << "read_clear_sctp - size mismatch ... FIX ME!" << std::endl;
+        std::cerr << "read_clear_sctp - size mismatch - e/r " << hd.length << "/" << nread << " ... FIX ME!" << std::endl;
         exit(EXIT_FAILURE);
       }
     } else if (nread >= 24){
       frame_unpack_frame_hd(&hd, buf.data() + 24);
       // checks : sizes match?
       if (nread != (24 + hd.length + 9)) {
-        std::cerr << "read_clear_sctp - size mismatch ... FIX ME!" << std::endl;
+        std::cerr << "read_clear_sctp - size mismatch (waiting for magic) - e/r " << hd.length << "/" << nread << " ... FIX ME!" << std::endl;
         exit(EXIT_FAILURE);
       }
       magic_received = true;
@@ -748,7 +748,7 @@ int Http2Handler::read_clear_sctp() {
 
     // checks : streams match?
 #ifdef SCTP_MULTISTREAM
-    if (hd.stream_id != rcvinfo->rcv_sid) {
+    if (hd.stream_id != rcvinfo->rcv_sid && rcvinfo->rcv_sid != 0) {
       std::cerr << "read_clear_sctp - http2/sctp stream mismatch ... FIX ME!" << std::endl;
       exit(EXIT_FAILURE);
     }
