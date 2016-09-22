@@ -48,8 +48,17 @@ if(ENABLE_APP)
     nghttp.cc
     ssl.cc
   )
+
+  # nghttp (neat) client
+  set(NGHTTP_NEAT_SOURCES
+    ${HELPER_OBJECTS}
+    nghttp_neat.cc
+    ssl.cc
+  )
+
   if(HAVE_LIBXML2)
     list(APPEND NGHTTP_SOURCES HtmlParser.cc)
+    list(APPEND NGHTTP_NEAT_SOURCES HtmlParser.cc)
   endif()
 
   # nghttpd
@@ -181,6 +190,7 @@ if(ENABLE_APP)
   endif()
 
   add_executable(nghttp   ${NGHTTP_SOURCES}   $<TARGET_OBJECTS:http-parser>)
+  add_executable(nghttp_neat   ${NGHTTP_NEAT_SOURCES}   $<TARGET_OBJECTS:http-parser>)
   add_executable(nghttpd  ${NGHTTPD_SOURCES}  $<TARGET_OBJECTS:http-parser>)
   add_executable(nghttpx  ${NGHTTPX-bin_SOURCES} $<TARGET_OBJECTS:http-parser>)
   target_compile_definitions(nghttpx PRIVATE "-DPKGDATADIR=\"${PKGDATADIR}\"")
