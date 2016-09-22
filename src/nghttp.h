@@ -240,9 +240,6 @@ struct HttpClient {
   void record_domain_lookup_end_time();
   void record_connect_end_time();
 
-  void frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
-  uint32_t get_uint32(const uint8_t *data);
-
 #ifdef HAVE_JANSSON
   void output_har(FILE *outfile);
 #endif // HAVE_JANSSON

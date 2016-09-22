@@ -374,9 +374,6 @@ struct Client {
   void record_client_end_time();
 
   void signal_write();
-
-  bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
-  uint32_t get_uint32(const uint8_t *data);
 };
 
 } // namespace h2load

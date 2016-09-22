@@ -1019,7 +1019,7 @@ int Client::read_clear_sctp() {
       return -1;
     }
 
-    frame_unpack_frame_hd(&hd, buf);
+    util::frame_unpack_frame_hd(&hd, buf, config.verbose);
 
     if (hd.length + 9 != nread) {
 	std::cout << "nread : " << nread << " - hd.length : " << hd.length << std::endl;
@@ -1039,7 +1039,7 @@ int Client::read_clear_sctp() {
     }
 
 #ifdef SCTP_MULTISTREAM
-    if (hd.stream_id != rcvinfo->rcv_sid) {
+    if (hd.stream_id != rcvinfo->rcv_sid && hd.type == NGHTTP2_DATA) {
       std::cerr << "http2/sctp stream mismatch ... FIX ME!" << std::endl;
       exit(EXIT_FAILURE);
     }
@@ -1132,7 +1132,7 @@ int Client::write_clear_sctp() {
 
       /* H2 frame is 9 byte ... */
       if (iov[0].iov_len >= 9) {
-        frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base);
+        util::frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base, config.verbose);
         if (config.verbose) {
           std::cerr << "### outgoing frame - buffered total : " << wb.len << std::endl;
           //std::cerr << "iovstat - len : " << iovcnt << " - iov_len : " << iov[0].iov_len << std::endl;
@@ -1145,7 +1145,8 @@ int Client::write_clear_sctp() {
 
       framelen = 9 + hd.length;
 #ifdef SCTP_MULTISTREAM
-      sndinfo->snd_sid = hd.stream_id;
+      //sndinfo->snd_sid = hd.stream_id;
+      sndinfo->snd_sid = 0;
 #else // SCTP_MULTISTREAM
       sndinfo->snd_sid = 0;
 #endif // SCTP_MULTISTREAM
@@ -1155,7 +1156,7 @@ int Client::write_clear_sctp() {
        */
 
       if (iov[0].iov_len >= 24 + 9) {
-        frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base + 24);
+        util::frame_unpack_frame_hd(&hd, (const uint8_t *)iov[0].iov_base + 24, config.verbose);
         if (config.verbose) {
           std::cerr << "sending magic frame + settings frame ..." << std::endl;
         }

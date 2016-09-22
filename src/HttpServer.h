@@ -198,8 +198,6 @@ public:
   int read_clear_sctp();
   int write_clear();
   int write_clear_sctp();
-  void frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf);
-  uint32_t get_uint32(const uint8_t *data);
   int tls_handshake();
   int read_tls();
   int write_tls();

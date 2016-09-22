@@ -714,14 +714,14 @@ int Http2Handler::read_clear_sctp() {
     }
 
     if (magic_received) {
-      frame_unpack_frame_hd(&hd, buf.data());
+      util::frame_unpack_frame_hd(&hd, buf.data(), sessions_->get_config()->verbose);
       // checks : sizes match?
       if (nread != (hd.length + 9)) {
         std::cerr << "read_clear_sctp - size mismatch - e/r " << hd.length << "/" << nread << " ... FIX ME!" << std::endl;
         exit(EXIT_FAILURE);
       }
     } else if (nread >= 24){
-      frame_unpack_frame_hd(&hd, buf.data() + 24);
+      util::frame_unpack_frame_hd(&hd, buf.data() + 24, sessions_->get_config()->verbose);
       // checks : sizes match?
       if (nread != (24 + hd.length + 9)) {
         std::cerr << "read_clear_sctp - size mismatch (waiting for magic) - e/r " << hd.length << "/" << nread << " ... FIX ME!" << std::endl;
@@ -748,8 +748,8 @@ int Http2Handler::read_clear_sctp() {
     // checks : streams match?
 #ifdef SCTP_MULTISTREAM
     if (hd.stream_id != rcvinfo->rcv_sid && rcvinfo->rcv_sid != 0) {
-      std::cerr << "read_clear_sctp - http2/sctp stream mismatch ... FIX ME!" << std::endl;
-      exit(EXIT_FAILURE);
+      //std::cerr << "read_clear_sctp - http2/sctp stream mismatch ... FIX ME!" << std::endl;
+      //exit(EXIT_FAILURE);
     }
 #endif //SCTP_MULTISTREAM
 
@@ -847,7 +847,7 @@ int Http2Handler::write_clear_sctp() {
     if (wb_.rleft() > 0) {
 
       while (wb_.rleft() >= (framelen + 9)) {
-        frame_unpack_frame_hd(&hd, wb_.pos + framelen);
+        util::frame_unpack_frame_hd(&hd, wb_.pos + framelen, sessions_->get_config()->verbose);
 
         if (sessions_->get_config()->verbose) {
           std::cerr << "### outgoing http2 frame - buffered total : " << wb_.rleft() << std::endl;
@@ -884,7 +884,9 @@ int Http2Handler::write_clear_sctp() {
 
 
 #ifdef SCTP_MULTISTREAM
-      sndinfo->snd_sid = hd.stream_id;
+      if (hd.type == NGHTTP2_DATA) {
+        sndinfo->snd_sid = hd.stream_id;
+      }
 #else // SCTP_MULTISTREAM
       sndinfo->snd_sid = 0;
 #endif
