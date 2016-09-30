@@ -43,8 +43,6 @@
 
 #include <openssl/ssl.h>
 
-#include <ev.h>
-
 #include <nghttp2/nghttp2.h>
 
 #include "http-parser/http_parser.h"
@@ -53,6 +51,9 @@
 #include "http2.h"
 #include "nghttp2_gzip.h"
 #include "template.h"
+#include <uv.h>
+
+#include "../../neat/neat_internal.h"
 
 namespace nghttp2 {
 
@@ -77,7 +78,7 @@ struct Config {
   ssize_t peer_max_concurrent_streams;
   int multiply;
   // milliseconds
-  ev_tstamp timeout;
+  uint64_t timeout;
   int window_bits;
   int connection_window_bits;
   int verbose;
@@ -111,9 +112,15 @@ struct RequestTiming {
 };
 
 struct Request; // forward declaration for ContinueTimer
+struct HttpClient;
+
+struct ContinueTimerData {
+  Request *request;
+  HttpClient *client;
+};
 
 struct ContinueTimer {
-  ContinueTimer(struct ev_loop *loop, Request *req);
+  ContinueTimer(uv_loop_t *loop, HttpClient *client, Request *req);
   ~ContinueTimer();
 
   void start();
@@ -123,8 +130,9 @@ struct ContinueTimer {
   // callback has not already been run
   void dispatch_continue();
 
-  struct ev_loop *loop;
-  ev_timer timer;
+  uv_loop_t *loop;
+  uv_timer_t timer;
+  ContinueTimerData timer_data;
 };
 
 struct Request {
@@ -196,13 +204,13 @@ struct SessionTiming {
 enum class ClientState { IDLE, CONNECTED };
 
 struct HttpClient {
-  HttpClient(const nghttp2_session_callbacks *callbacks, struct ev_loop *loop,
+  HttpClient(const nghttp2_session_callbacks *callbacks, struct neat_ctx *loop,
              SSL_CTX *ssl_ctx);
   ~HttpClient();
 
   bool need_upgrade() const;
   int resolve_host(const std::string &host, uint16_t port);
-  int initiate_connection();
+  int initiate_connection(const std::string &host, uint16_t port);
   void disconnect();
 
   int noop();
@@ -253,17 +261,27 @@ struct HttpClient {
   // Used for parse the HTTP upgrade response from server
   std::unique_ptr<http_parser> htp;
   SessionTiming timing;
+  /*
   ev_io wev;
   ev_io rev;
   ev_timer wt;
   ev_timer rt;
   ev_timer settings_timer;
+  */
+  uv_timer_t wt;
+  uv_timer_t rt;
+  uv_timer_t settings_timer;
+
+  neat_ctx *ctx;
+  neat_flow *flow;
+  neat_flow_operations ops;
+
   std::function<int(HttpClient &)> readfn, writefn;
   std::function<int(HttpClient &, const uint8_t *, size_t)> on_readfn;
   std::function<int(HttpClient &)> on_writefn;
   nghttp2_session *session;
   const nghttp2_session_callbacks *callbacks;
-  struct ev_loop *loop;
+  //struct ev_loop *loop;
   SSL_CTX *ssl_ctx;
   SSL *ssl;
   addrinfo *addrs;
