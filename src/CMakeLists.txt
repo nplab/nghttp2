@@ -23,6 +23,9 @@ include_directories(
   ${ZLIB_INCLUDE_DIRS}
 )
 
+FIND_LIBRARY(UV_LIB uv)
+FIND_LIBRARY(NEAT_LIB neat)
+
 # XXX per-target?
 link_libraries(
   nghttp2
@@ -34,6 +37,8 @@ link_libraries(
   ${JANSSON_LIBRARIES}
   ${ZLIB_LIBRARIES}
   ${APP_LIBRARIES}
+  ${UV_LIB}
+  ${NEAT_LIB}
 )
 
 if(ENABLE_APP)

@@ -116,7 +116,7 @@ Config::Config()
       max_concurrent_streams(100),
       peer_max_concurrent_streams(100),
       multiply(1),
-      timeout(0.),
+      timeout(0),
       window_bits(-1),
       connection_window_bits(-1),
       verbose(0),
@@ -533,6 +533,7 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
   auto rv = client->do_write();
   if (rv == HttpClient::ERR_CONNECT_FAIL) {
+    std::cerr << ">>>>>> on_writable - FAILED!" << std::endl;
     client->connect_fail();
     return NEAT_ERROR_IO;
   }
@@ -554,6 +555,7 @@ void on_timeout(uv_timer_t *timer) {
 namespace {
 void on_timeout_settings(uv_timer_t *timer) {
   auto client = static_cast<HttpClient *>(timer->data);
+  std::cerr << "[ERROR] Timeout settings" << std::endl;
   uv_timer_stop(timer);
 
   nghttp2_session_terminate_session(client->session, NGHTTP2_SETTINGS_TIMEOUT);
@@ -562,10 +564,9 @@ void on_timeout_settings(uv_timer_t *timer) {
 }
 } // namespace
 
-HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks,
-                       struct neat_ctx *ctx, SSL_CTX *ssl_ctx)
+HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks,SSL_CTX *ssl_ctx)
     : wb(&mcpool),
-      ctx(ctx),
+      ctx(nullptr),
       session(nullptr),
       callbacks(callbacks),
       ssl_ctx(ssl_ctx),
@@ -578,21 +579,33 @@ HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks,
       settings_payloadlen(0),
       state(ClientState::IDLE),
       upgrade_response_status_code(0),
-      fd(-1),
       upgrade_response_complete(false) {
 
 
-  if ((ctx = neat_init_ctx()) == NULL) {
+  if ((this->ctx = neat_init_ctx()) == NULL) {
     std::cerr << "[ERROR] neat_init_ctx() failed" << std::endl;
     //return -1;
   }
 
-  if ((flow = neat_new_flow(ctx)) == NULL) {
+  if ((this->flow = neat_new_flow(this->ctx)) == NULL) {
     std::cerr << "[ERROR] neat_new_flow() failed" << std::endl;
     //return -1;
   }
 
-  neat_set_property(ctx, flow, config_property);
+  neat_set_property(this->ctx, this->flow, config_property);
+
+  uv_timer_init(this->ctx->loop, &wt);
+  uv_timer_init(this->ctx->loop, &rt);
+  uv_timer_init(this->ctx->loop, &settings_timer);
+
+  wt.data = this;
+  rt.data = this;
+  settings_timer.data = this;
+
+  std::cerr << "CTX: " << ctx << std::endl;
+
+  memset(&ops, 0, sizeof(ops));
+  ops.userData = this;
 
   /*
   memset(&ops, 0, sizeof(ops));
@@ -621,6 +634,15 @@ HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks,
 
 HttpClient::~HttpClient() {
   disconnect();
+
+  if (this->flow != NULL) {
+    neat_free_flow(this->flow);
+  }
+
+  if (this->ctx != NULL) {
+    std::cerr << ">>>>>>>>> FREEEEEEE CTX" << std::endl;
+    neat_free_ctx(this->ctx);
+  }
 
   if (addrs) {
     freeaddrinfo(addrs);
@@ -660,15 +682,20 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
   ops.on_connected = on_connect;
   neat_set_operations(ctx, flow, &ops);
 
+  std::cerr << ">>>>> FELIX : neat open ctx: " << ctx << " - host: " << host.c_str() << std::endl;
 
 
-  if (neat_open(ctx, flow, host.c_str(), port, NULL, 0) == NEAT_OK) {
-    std::cerr << "[ERROR] neat_open() failed" << std::endl;
+
+  if (neat_open(ctx, flow, host.c_str(), port, NULL, 0) != NEAT_OK) {
+    std::cerr << "[ERROR] neat_open() failed - ctx: " << ctx << " - host: " << host << " - port: " << port << std::endl;
   }
 
 
 
-  /*
+  uv_timer_set_repeat(&wt, 10000);
+  uv_timer_again(&wt);
+
+
   writefn = &HttpClient::connected;
   if (need_upgrade()) {
     on_readfn = &HttpClient::on_upgrade_read;
@@ -677,6 +704,8 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
     on_readfn = &HttpClient::on_read;
     on_writefn = &HttpClient::on_write;
   }
+
+  /*
 
   ev_io_set(&rev, fd, EV_READ);
   ev_io_set(&wev, fd, EV_WRITE);
@@ -691,6 +720,7 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
 }
 
 void HttpClient::disconnect() {
+  std::cerr << ">>>>>> FELIX : " << __func__ << std::endl;
   state = ClientState::IDLE;
 
   for (auto req = std::begin(reqvec); req != std::end(reqvec); ++req) {
@@ -714,9 +744,13 @@ void HttpClient::disconnect() {
   neat_set_operations(ctx, flow, &ops);
 
   uv_timer_stop(&settings_timer);
-
   uv_timer_stop(&rt);
   uv_timer_stop(&wt);
+
+  neat_shutdown(ctx, flow);
+
+  //neat_free_flow(this->flow);
+  neat_stop_event_loop(this->ctx);
 
   nghttp2_session_del(session);
   session = nullptr;
@@ -729,34 +763,43 @@ void HttpClient::disconnect() {
     ssl = nullptr;
   }
 
+  /*
   if (fd != -1) {
     shutdown(fd, SHUT_WR);
     close(fd);
     fd = -1;
-  }
+  }*/
 }
 
 int HttpClient::read_clear() {
-  uv_timer_again(&rt);
+  uint32_t bytes_read = 0;
+  neat_error_code code;
+
+  std::cout << " >>>>>>>> read_clear" << std::endl;
+
+  if (uv_is_active((uv_handle_t *) &rt)) {
+    uv_timer_again(&rt);
+  } else if (config.timeout) {
+    uv_timer_start(&rt, on_timeout, 0, config.timeout);
+  }
 
   std::array<uint8_t, 8_k> buf;
 
   for (;;) {
-    ssize_t nread;
-    while ((nread = read(fd, buf.data(), buf.size())) == -1 && errno == EINTR)
-      ;
-    if (nread == -1) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    //while ((nread = read(fd, buf.data(), buf.size())) == -1 && errno == EINTR);
+    code = neat_read(this->ctx, this->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
+
+    if (code == NEAT_ERROR_WOULD_BLOCK) {
         return 0;
-      }
+    } else if (code != NEAT_OK) {
+        return -1;
+    }
+
+    if (bytes_read == 0) {
       return -1;
     }
 
-    if (nread == 0) {
-      return -1;
-    }
-
-    if (on_readfn(*this, buf.data(), nread) != 0) {
+    if (on_readfn(*this, buf.data(), bytes_read) != 0) {
       return -1;
     }
   }
@@ -765,44 +808,52 @@ int HttpClient::read_clear() {
 }
 
 int HttpClient::write_clear() {
-  uv_timer_again(&rt);
+  neat_error_code code;
+  std::array<struct iovec, 1> iov;
+  std::cout << " >>>>>>>> write_clear" << std::endl;
 
-  std::array<struct iovec, 2> iov;
+
+  if (uv_is_active((uv_handle_t *) &rt)) {
+    uv_timer_again(&rt);
+  } else if (config.timeout) {
+    uv_timer_start(&rt, on_timeout, 0, config.timeout);
+  }
+
 
   for (;;) {
+    std::cout << " >>>>>>>> write_clear - before" << std::endl;
     if (on_writefn(*this) != 0) {
       return -1;
     }
-
+    std::cout << " >>>>>>>> write_clear - after" << std::endl;
     auto iovcnt = wb.riovec(iov.data(), iov.size());
 
     if (iovcnt == 0) {
       break;
     }
 
-    ssize_t nwrite;
-    while ((nwrite = writev(fd, iov.data(), iovcnt)) == -1 && errno == EINTR)
-      ;
-    if (nwrite == -1) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        /*ev_io_start(loop, &wev);
-        ev_timer_again(loop, &wt);*/
-        ops.on_writable = on_writable;
-        neat_set_operations(ctx, flow, &ops);
+    code = neat_write(this->ctx, this->flow, (const unsigned char *) iov[0].iov_base, iov[0].iov_len, NULL, 0);
+    if (code == NEAT_ERROR_WOULD_BLOCK) {
+      ops.on_writable = on_writable;
+      neat_set_operations(ctx, flow, &ops);
+      if (uv_is_active((uv_handle_t *) &wt)) {
         uv_timer_again(&wt);
-        return 0;
+      } else if (config.timeout){
+        uv_timer_start(&wt, on_timeout, 0, config.timeout);
       }
+      return 0;
+    } else if (code != NEAT_OK) {
       return -1;
     }
 
-    wb.drain(nwrite);
+    wb.drain(iov[0].iov_len);
   }
   /*
   ev_io_stop(loop, &wev);
   ev_timer_stop(loop, &wt);
   */
 
-  ops.on_writable = on_writable;
+  ops.on_writable = NULL;
   neat_set_operations(ctx, flow, &ops);
   uv_timer_stop(&wt);
 
@@ -832,9 +883,9 @@ void HttpClient::connect_fail() {
 }
 
 int HttpClient::connected() {
-  if (!util::check_socket_connected(fd)) {
+  /*if (!util::check_socket_connected(fd)) {
     return ERR_CONNECT_FAIL;
-  }
+  }*/
 
   if (config.verbose) {
     print_timer();
@@ -854,7 +905,12 @@ int HttpClient::connected() {
   ops.on_readable = on_readable;
   ops.on_writable = on_writable;
   neat_set_operations(ctx, flow, &ops);
-  uv_timer_again(&rt);
+
+  if (uv_is_active((uv_handle_t *) &rt)) {
+    uv_timer_again(&rt);
+  } else if (config.timeout){
+    uv_timer_start(&rt, on_timeout, 0, config.timeout);
+  }
   uv_timer_stop(&wt);
 
   if (ssl) {
@@ -1192,7 +1248,12 @@ int HttpClient::connection_made() {
   }
 
   //ev_timer_again(loop, &settings_timer);
-  uv_timer_again(&settings_timer);
+  //uv_timer_again(&settings_timer);
+  if (uv_is_active((uv_handle_t *) &settings_timer)) {
+    uv_timer_again(&settings_timer);
+  } else if (config.timeout) {
+    uv_timer_start(&settings_timer, on_timeout_settings, 0, 10000);
+  }
 
   if (config.connection_window_bits != -1) {
     int32_t window_size = (1 << config.connection_window_bits) - 1;
@@ -1271,7 +1332,12 @@ int HttpClient::on_write() {
 
 int HttpClient::tls_handshake() {
   //ev_timer_again(loop, &rt);
-  uv_timer_again(&rt);
+  if (uv_is_active((uv_handle_t *) &rt)) {
+    uv_timer_again(&rt);
+  } else if (config.timeout) {
+    uv_timer_start(&rt, on_timeout, 0, config.timeout);
+  }
+
 
   ERR_clear_error();
 
@@ -1296,7 +1362,11 @@ int HttpClient::tls_handshake() {
       */
       ops.on_writable = on_writable;
       neat_set_operations(ctx, flow, &ops);
-      uv_timer_again(&wt);
+      if (uv_is_active((uv_handle_t *) &wt)) {
+        uv_timer_again(&wt);
+      } else if (config.timeout) {
+        uv_timer_start(&wt, on_timeout, 0, config.timeout);
+      }
       return 0;
     default:
       return -1;
@@ -1323,7 +1393,11 @@ int HttpClient::tls_handshake() {
 
 int HttpClient::read_tls() {
   //ev_timer_again(loop, &rt);
-  uv_timer_again(&rt);
+  if (uv_is_active((uv_handle_t *) &rt)) {
+    uv_timer_again(&rt);
+  } else if (config.timeout) {
+    uv_timer_start(&rt, on_timeout, 0, config.timeout);
+  }
 
   ERR_clear_error();
 
@@ -1352,7 +1426,11 @@ int HttpClient::read_tls() {
 
 int HttpClient::write_tls() {
   //ev_timer_again(loop, &rt);
-  uv_timer_again(&rt);
+  if (uv_is_active((uv_handle_t *) &rt)) {
+    uv_timer_again(&rt);
+  } else if (config.timeout) {
+    uv_timer_start(&rt, on_timeout, 0, config.timeout);
+  }
 
   ERR_clear_error();
 
@@ -1384,7 +1462,11 @@ int HttpClient::write_tls() {
         */
         ops.on_writable = on_writable;
         neat_set_operations(ctx, flow, &ops);
-        uv_timer_again(&wt);
+        if (uv_is_active((uv_handle_t *) &wt)) {
+          uv_timer_again(&wt);
+        } else if (config.timeout) {
+          uv_timer_start(&wt, on_timeout, 0, config.timeout);
+        }
         return 0;
       default:
         return -1;
@@ -2264,7 +2346,7 @@ int communicate(const std::string &scheme, const std::string &host,
                 const nghttp2_session_callbacks *callbacks) {
   int result = 0;
   //auto loop = EV_DEFAULT;
-  struct neat_ctx *ctx = NULL;
+  //neat_ctx *ctx = NULL;
   SSL_CTX *ssl_ctx = nullptr;
   if (scheme == "https") {
     ssl_ctx = SSL_CTX_new(SSLv23_client_method());
@@ -2316,8 +2398,9 @@ int communicate(const std::string &scheme, const std::string &host,
 #endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
   }
   {
-    HttpClient client{callbacks, ctx, ssl_ctx};
+    HttpClient client{callbacks, ssl_ctx};
 
+    std::cerr << ">>>>> felix 2 - client.ctx "<< client.ctx << std::endl;
     int32_t dep_stream_id = 0;
 
     if (!config.no_dep) {
@@ -2355,7 +2438,7 @@ int communicate(const std::string &scheme, const std::string &host,
     ev_run(loop, 0);
     ev_set_userdata(loop, nullptr);
     */
-    neat_start_event_loop(ctx, NEAT_RUN_DEFAULT);
+    neat_start_event_loop(client.ctx, NEAT_RUN_DEFAULT);
 
 #ifdef HAVE_JANSSON
     if (!config.harfile.empty()) {

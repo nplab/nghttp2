@@ -204,8 +204,7 @@ struct SessionTiming {
 enum class ClientState { IDLE, CONNECTED };
 
 struct HttpClient {
-  HttpClient(const nghttp2_session_callbacks *callbacks, struct neat_ctx *loop,
-             SSL_CTX *ssl_ctx);
+  HttpClient(const nghttp2_session_callbacks *callbacks, SSL_CTX *ssl_ctx);
   ~HttpClient();
 
   bool need_upgrade() const;
@@ -297,7 +296,6 @@ struct HttpClient {
   ClientState state;
   // The HTTP status code of the response message of HTTP Upgrade.
   unsigned int upgrade_response_status_code;
-  int fd;
   // true if the response message of HTTP Upgrade request is fully
   // received. It is not relevant the upgrade succeeds, or not.
   bool upgrade_response_complete;
