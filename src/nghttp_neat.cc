@@ -68,7 +68,7 @@
 #define O_BINARY (0)
 #endif // O_BINARY
 
-static char *config_property = "{\
+static const char *config_property = "{\
     \"transport\": [\
         {\
             \"value\": \"SCTP\",\
@@ -538,6 +538,7 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
     return NEAT_ERROR_IO;
   }
   if (rv != 0) {
+    std::cerr << ">>>>>> on_writable - rv != 0 - disconnect!" << std::endl;
     client->disconnect();
   }
   return NEAT_ERROR_OK;
@@ -720,7 +721,7 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
 }
 
 void HttpClient::disconnect() {
-  std::cerr << ">>>>>> FELIX : " << __func__ << std::endl;
+  std::cerr << ">>>>>> FELIX : " << __func__  << " - ctx:" << ctx << std::endl;
   state = ClientState::IDLE;
 
   for (auto req = std::begin(reqvec); req != std::end(reqvec); ++req) {
@@ -747,10 +748,10 @@ void HttpClient::disconnect() {
   uv_timer_stop(&rt);
   uv_timer_stop(&wt);
 
-  neat_shutdown(ctx, flow);
+  //neat_shutdown(ctx, flow);
 
   //neat_free_flow(this->flow);
-  neat_stop_event_loop(this->ctx);
+  neat_stop_event_loop(ctx);
 
   nghttp2_session_del(session);
   session = nullptr;
@@ -823,6 +824,7 @@ int HttpClient::write_clear() {
   for (;;) {
     std::cout << " >>>>>>>> write_clear - before" << std::endl;
     if (on_writefn(*this) != 0) {
+      std::cout << " >>>>>>>> on_writefn != 0 - return -1" << std::endl;
       return -1;
     }
     std::cout << " >>>>>>>> write_clear - after" << std::endl;
