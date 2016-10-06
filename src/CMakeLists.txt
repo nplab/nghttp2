@@ -74,6 +74,14 @@ if(ENABLE_APP)
     HttpServer.cc
   )
 
+  # nghttpd
+  set(NGHTTPD_NEAT_SOURCES
+    ${HELPER_OBJECTS}
+    nghttpd_neat.cc
+    ssl.cc
+    HttpServer_neat.cc
+  )
+
   # h2load
   set(H2LOAD_SOURCES
     util.cc
@@ -197,6 +205,7 @@ if(ENABLE_APP)
   add_executable(nghttp   ${NGHTTP_SOURCES}   $<TARGET_OBJECTS:http-parser>)
   add_executable(nghttp_neat   ${NGHTTP_NEAT_SOURCES}   $<TARGET_OBJECTS:http-parser>)
   add_executable(nghttpd  ${NGHTTPD_SOURCES}  $<TARGET_OBJECTS:http-parser>)
+  add_executable(nghttpd_neat ${NGHTTPD_NEAT_SOURCES}  $<TARGET_OBJECTS:http-parser>)
   add_executable(nghttpx  ${NGHTTPX-bin_SOURCES} $<TARGET_OBJECTS:http-parser>)
   target_compile_definitions(nghttpx PRIVATE "-DPKGDATADIR=\"${PKGDATADIR}\"")
   target_link_libraries(nghttpx nghttpx_static)
