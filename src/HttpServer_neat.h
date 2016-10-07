@@ -207,6 +207,9 @@ public:
   using WriteBuf = Buffer<64_k>;
 
   WriteBuf *get_wb();
+  neat_flow_operations ops;
+  neat_ctx *ctx;
+  neat_flow *flow;
 
 private:
   //ev_io wev_;
@@ -214,15 +217,13 @@ private:
   uv_timer_t settings_timerev_;
   std::map<int32_t, std::unique_ptr<Stream>> id2stream_;
   WriteBuf wb_;
-  std::function<int(Http2Handler &)> read_, write_;
   int64_t session_id_;
   nghttp2_session *session_;
   Sessions *sessions_;
   const uint8_t *data_pending_;
   size_t data_pendinglen_;
-  neat_ctx *ctx;
-  neat_flow *flow;
-  neat_flow_operations ops;
+
+
   //int fd_;
 };
 

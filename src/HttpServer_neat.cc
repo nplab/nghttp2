@@ -483,9 +483,6 @@ namespace {
 neat_error_code on_readable(struct neat_flow_operations *opCB) {
   int rv;
   auto handler = static_cast<Http2Handler *>(opCB->userData);
-
-  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
-
   rv = handler->on_read();
   if (rv == -1) {
     delete_handler(handler);
@@ -501,13 +498,31 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   int rv;
   auto handler = static_cast<Http2Handler *>(opCB->userData);
 
-  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
-
   rv = handler->on_write();
   if (rv == -1) {
     delete_handler(handler);
     return NEAT_ERROR_IO;
   }
+  return NEAT_ERROR_OK;
+}
+} // namespace
+
+namespace {
+neat_error_code on_connected(struct neat_flow_operations *opCB) {
+  Sessions *sessions = (Sessions *) opCB->ctx->loop->data;
+  auto handler = make_unique<Http2Handler>(sessions, opCB->ctx, opCB->flow, sessions->get_next_session_id());
+
+  if (handler->connection_made() != 0) {
+    std::cerr << __func__ << " - connection_made() failed" << std::endl;
+    return NEAT_ERROR_IO;
+  }
+
+  opCB->on_writable = on_readable;
+  opCB->userData = handler.get();
+  neat_set_operations(opCB->ctx, opCB->flow, opCB);
+
+  sessions->add_handler(handler.release());
+
   return NEAT_ERROR_OK;
 }
 } // namespace
@@ -522,13 +537,9 @@ Http2Handler::Http2Handler(Sessions *sessions, neat_ctx *ctx, neat_flow *flow,
       ctx(ctx),
       flow(flow)
        {
-  auto loop = sessions_->get_loop();
 
-  uv_timer_init(loop, &settings_timerev_);
+  uv_timer_init(ctx->loop, &settings_timerev_);
   settings_timerev_.data = this;
-
-  read_ = &Http2Handler::read_clear;
-  write_ = &Http2Handler::write_clear;
 }
 
 Http2Handler::~Http2Handler() {
@@ -593,6 +604,9 @@ int Http2Handler::read_clear() {
 
   std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
 
+  std::cerr << ">>>>>>>>>> " << __func__ << " - ptr handler : " << this << std::endl; //<< " - flow : " << this->flow << std::endl;
+  std::cerr << ">>>>>>>>>> " << __func__ << " - ptr ctx : " << this->ctx << std::endl;
+
   for (;;) {
     code = neat_read(this->ctx, this->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
 
@@ -620,12 +634,10 @@ int Http2Handler::read_clear() {
     }
   }
 
-  return write_(*this);
+  return write_clear();
 }
 
 int Http2Handler::write_clear() {
-  //auto loop = sessions_->get_loop();
-
   neat_error_code code;
 
   std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
@@ -665,16 +677,14 @@ int Http2Handler::write_clear() {
   return 0;
 }
 
-int Http2Handler::on_read() { return read_(*this); }
+int Http2Handler::on_read() { return read_clear(); }
 
-int Http2Handler::on_write() { return write_(*this); }
+int Http2Handler::on_write() { return write_clear(); }
 
 int Http2Handler::connection_made() {
   int r;
 
   r = nghttp2_session_server_new(&session_, sessions_->get_callbacks(), this);
-
-  std::cerr << __func__ << " - session ptr : " << session_ << std::endl;
 
   if (r != 0) {
     return r;
@@ -712,7 +722,6 @@ int Http2Handler::connection_made() {
       return r;
     }
   }
-
 
   return on_write();
 }
@@ -1634,29 +1643,6 @@ HttpServer::HttpServer(const Config *config) : config_(config) {
   };
 }
 
-namespace {
-neat_error_code on_connected(struct neat_flow_operations *opCB) {
-  std::cerr << ">>>>>> on_connect" << std::endl;
-
-  Sessions *sessions = (Sessions *) opCB->ctx->loop->data;
-
-  std::cerr << ">>>>>> on_connect - ptr: " << sessions << std::endl;
-
-  auto handler = make_unique<Http2Handler>(sessions, opCB->ctx, opCB->flow, sessions->get_next_session_id());
-  opCB->userData = &handler;
-  std::cerr << ">>>>>> on_connect" << std::endl;
-
-  if (handler->connection_made() != 0) {
-    std::cerr << ">>>>>> on_connect - connection_made failed" << std::endl;
-    return NEAT_ERROR_IO;
-  }
-
-  sessions->add_handler(handler.release());
-
-  return NEAT_ERROR_OK;
-}
-} // namespace
-
 int HttpServer::run() {
 
 
@@ -1687,7 +1673,6 @@ int HttpServer::run() {
   this->ctx->loop->data = &sessions;
 
   neat_start_event_loop(this->ctx, NEAT_RUN_DEFAULT);
-
 
   return 0;
 }
