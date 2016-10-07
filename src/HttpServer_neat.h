@@ -39,8 +39,6 @@
 
 #include <uv.h>
 
-#include <openssl/ssl.h>
-
 #include <nghttp2/nghttp2.h>
 
 #include "http2.h"
@@ -220,7 +218,6 @@ private:
   int64_t session_id_;
   nghttp2_session *session_;
   Sessions *sessions_;
-  SSL *ssl_;
   const uint8_t *data_pending_;
   size_t data_pendinglen_;
   neat_ctx *ctx;

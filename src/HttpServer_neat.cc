@@ -52,9 +52,6 @@
 #include <mutex>
 #include <deque>
 
-#include <openssl/err.h>
-#include <openssl/dh.h>
-
 #include <zlib.h>
 #include <neat/neat.h>
 #include "../../neat/neat_internal.h"
@@ -62,7 +59,6 @@
 #include "app_helper.h"
 #include "http2.h"
 #include "util.h"
-#include "ssl.h"
 #include "template.h"
 
 #ifndef O_BINARY
@@ -127,7 +123,6 @@ Config::Config()
 Config::~Config() {}
 
 namespace {
-//void stream_timeout_cb(struct ev_loop *loop, uv_timer_t *w, int revents) {
 void stream_timeout_cb(uv_timer_t *w) {
   int rv;
   auto stream = static_cast<Stream *>(w->data);
@@ -249,12 +244,10 @@ bool validate_file_entry(FileEntry *ent, uint64_t now) {
 
 class Sessions {
 public:
-  Sessions(HttpServer *sv, uv_loop_t *loop, const Config *config,
-           SSL_CTX *ssl_ctx)
+  Sessions(HttpServer *sv, uv_loop_t *loop, const Config *config)
       : sv_(sv),
         loop_(loop),
         config_(config),
-        ssl_ctx_(ssl_ctx),
         callbacks_(nullptr),
         next_session_id_(1),
         tstamp_cached_(uv_now(loop)),
@@ -263,7 +256,6 @@ public:
 
     fill_callback(callbacks_, config_);
 
-    //ev_timer_init(&release_fd_timer_, release_fd_cb, 0., RELEASE_FD_TIMEOUT);
     uv_timer_init(loop, &release_fd_timer_);
     release_fd_timer_.data = this;
   }
@@ -286,20 +278,7 @@ public:
       }
     }
   }
-  SSL_CTX *get_ssl_ctx() const { return ssl_ctx_; }
-  SSL *ssl_session_new(int fd) {
-    SSL *ssl = SSL_new(ssl_ctx_);
-    if (!ssl) {
-      std::cerr << "SSL_new() failed" << std::endl;
-      return nullptr;
-    }
-    if (SSL_set_fd(ssl, fd) == 0) {
-      std::cerr << "SSL_set_fd() failed" << std::endl;
-      SSL_free(ssl);
-      return nullptr;
-    }
-    return ssl;
-  }
+
   const Config *get_config() const { return config_; }
   uv_loop_t *get_loop() const {
     return loop_;
@@ -419,7 +398,6 @@ private:
   HttpServer *sv_;
   uv_loop_t *loop_;
   const Config *config_;
-  SSL_CTX *ssl_ctx_;
   nghttp2_session_callbacks *callbacks_;
   uv_timer_t release_fd_timer_;
   int64_t next_session_id_;
@@ -451,9 +429,6 @@ Stream::Stream(Http2Handler *handler, int32_t stream_id)
       header_buffer_size(0),
       stream_id(stream_id),
       echo_upload(false) {
-  //auto config = handler->get_config();
-  //ev_timer_init(&rtimer, stream_timeout_cb, 0., config->stream_read_timeout);
-  //ev_timer_init(&wtimer, stream_timeout_cb, 0., config->stream_write_timeout);
 
   auto loop = handler->get_loop();
   uv_timer_init(loop, &rtimer);
@@ -505,7 +480,6 @@ void settings_timeout_cb(uv_timer_t *w) {
 } // namespace
 
 namespace {
-//void readcb(struct ev_loop *loop, ev_io *w, int revents) {
 neat_error_code on_readable(struct neat_flow_operations *opCB) {
   int rv;
   auto handler = static_cast<Http2Handler *>(opCB->userData);
@@ -523,7 +497,6 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
 } // namespace
 
 namespace {
-//void writecb(struct ev_loop *loop, ev_io *w, int revents) {
 neat_error_code on_writable(struct neat_flow_operations *opCB) {
   int rv;
   auto handler = static_cast<Http2Handler *>(opCB->userData);
@@ -550,53 +523,18 @@ Http2Handler::Http2Handler(Sessions *sessions, neat_ctx *ctx, neat_flow *flow,
       flow(flow)
        {
   auto loop = sessions_->get_loop();
-  //ev_timer_init(&settings_timerev_, settings_timeout_cb, 10., 0.);
 
   uv_timer_init(loop, &settings_timerev_);
   settings_timerev_.data = this;
 
-  /*
-  ev_io_init(&wev_, writecb, fd, EV_WRITE);
-  ev_io_init(&rev_, readcb, fd, EV_READ);
-
-  settings_timerev_.data = this;
-  wev_.data = this;
-  rev_.data = this;
-
-
-
-  ev_io_start(loop, &rev_);
-
-
-  if (ssl) {
-    SSL_set_accept_state(ssl);
-    read_ = &Http2Handler::tls_handshake;
-    write_ = &Http2Handler::tls_handshake;
-  } else {*/
-    read_ = &Http2Handler::read_clear;
-    write_ = &Http2Handler::write_clear;
-  //}
+  read_ = &Http2Handler::read_clear;
+  write_ = &Http2Handler::write_clear;
 }
 
 Http2Handler::~Http2Handler() {
   on_session_closed(this, session_id_);
   nghttp2_session_del(session_);
-  if (ssl_) {
-    SSL_set_shutdown(ssl_, SSL_RECEIVED_SHUTDOWN);
-    ERR_clear_error();
-    SSL_shutdown(ssl_);
-  }
-  //auto loop = sessions_->get_loop();
   uv_timer_stop(&settings_timerev_);
-  //ev_io_stop(loop, &rev_);
-  //ev_io_stop(loop, &wev_);
-  /*
-  if (ssl_) {
-    SSL_free(ssl_);
-  }
-  shutdown(fd_, SHUT_WR);
-  close(fd_);
-  */
 }
 
 void Http2Handler::remove_self() { sessions_->remove_handler(this); }
@@ -608,7 +546,6 @@ uv_loop_t *Http2Handler::get_loop() const {
 Http2Handler::WriteBuf *Http2Handler::get_wb() { return &wb_; }
 
 void Http2Handler::start_settings_timer() {
-  //ev_timer_start(sessions_->get_loop(), &settings_timerev_);
   uv_timer_start(&settings_timerev_, settings_timeout_cb, 10000, 0);
 }
 
@@ -657,20 +594,6 @@ int Http2Handler::read_clear() {
   std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
 
   for (;;) {
-    /*
-    ssize_t nread;
-    while ((nread = read(fd_, buf.data(), buf.size())) == -1 && errno == EINTR)
-      ;
-    if (nread == -1) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        break;
-      }
-      return -1;
-    }
-    if (nread == 0) {
-      return -1;
-    }*/
-
     code = neat_read(this->ctx, this->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
 
     if (code == NEAT_ERROR_WOULD_BLOCK) {
@@ -709,20 +632,6 @@ int Http2Handler::write_clear() {
 
   for (;;) {
     if (wb_.rleft() > 0) {
-
-      /*
-      ssize_t nwrite;
-      while ((nwrite = write(fd_, wb_.pos, wb_.rleft())) == -1 &&
-             errno == EINTR)
-        ;
-      if (nwrite == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          //ev_io_start(loop, &wev_);
-          return 0;
-        }
-        return -1;
-      }
-      */
       code = neat_write(this->ctx, this->flow, wb_.pos, wb_.rleft(), NULL, 0);
       if (code == NEAT_ERROR_WOULD_BLOCK) {
         return 0;
@@ -804,42 +713,8 @@ int Http2Handler::connection_made() {
     }
   }
 
-  if (ssl_ && !nghttp2::ssl::check_http2_requirement(ssl_)) {
-    terminate_session(NGHTTP2_INADEQUATE_SECURITY);
-  }
 
   return on_write();
-}
-
-int Http2Handler::verify_npn_result() {
-  const unsigned char *next_proto = nullptr;
-  unsigned int next_proto_len;
-  // Check the negotiated protocol in NPN or ALPN
-  SSL_get0_next_proto_negotiated(ssl_, &next_proto, &next_proto_len);
-  for (int i = 0; i < 2; ++i) {
-    if (next_proto) {
-      auto proto = StringRef{next_proto, next_proto_len};
-      if (sessions_->get_config()->verbose) {
-        std::cout << "The negotiated protocol: " << proto << std::endl;
-      }
-      if (util::check_h2_is_selected(proto)) {
-        return 0;
-      }
-      break;
-    } else {
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L
-      SSL_get0_alpn_selected(ssl_, &next_proto, &next_proto_len);
-#else  // OPENSSL_VERSION_NUMBER < 0x10002000L
-      break;
-#endif // OPENSSL_VERSION_NUMBER < 0x10002000L
-    }
-  }
-  if (sessions_->get_config()->verbose) {
-    std::cerr << "Client did not advertise HTTP/2 protocol."
-              << " (nghttp2 expects " << NGHTTP2_PROTO_VERSION_ID << ")"
-              << std::endl;
-  }
-  return -1;
 }
 
 int Http2Handler::submit_file_response(const StringRef &status, Stream *stream,
@@ -1699,166 +1574,6 @@ void fill_callback(nghttp2_session_callbacks *callbacks, const Config *config) {
 }
 } // namespace
 
-/*
-struct ClientInfo {
-  int fd;
-};
-*/
-/*
-struct Worker {
-  std::unique_ptr<Sessions> sessions;
-  //ev_async w;
-  // protectes q
-  std::mutex m;
-  std::deque<ClientInfo> q;
-};
-*/
-
-/*
-namespace {
-void worker_acceptcb(struct ev_loop *loop, ev_async *w, int revents) {
-  auto worker = static_cast<Worker *>(w->data);
-  auto &sessions = worker->sessions;
-
-  std::deque<ClientInfo> q;
-  {
-    std::lock_guard<std::mutex> lock(worker->m);
-    q.swap(worker->q);
-  }
-
-  for (auto c : q) {
-    sessions->accept_connection(c.fd);
-  }
-}
-} // namespace
-*/
-
-/*
-namespace {
-void run_worker(Worker *worker) {
-  auto loop = worker->sessions->get_loop();
-
-  ev_run(loop, 0);
-}
-} // namespace
-
-namespace {
-int get_ev_loop_flags() {
-  if (ev_supported_backends() & ~ev_recommended_backends() & EVBACKEND_KQUEUE) {
-    return ev_recommended_backends() | EVBACKEND_KQUEUE;
-  }
-
-  return 0;
-}
-} // namespace
-
-*/
-
-/*
-
-class AcceptHandler {
-public:
-  AcceptHandler(HttpServer *sv, Sessions *sessions, const Config *config)
-      : sessions_(sessions), config_(config), next_worker_(0) {
-    if (config_->num_worker == 1) {
-      return;
-    }
-    for (size_t i = 0; i < config_->num_worker; ++i) {
-      if (config_->verbose) {
-        std::cerr << "spawning thread #" << i << std::endl;
-      }
-      auto worker = make_unique<Worker>();
-      auto loop = ev_loop_new(get_ev_loop_flags());
-      worker->sessions =
-          make_unique<Sessions>(sv, loop, config_, sessions_->get_ssl_ctx());
-      ev_async_init(&worker->w, worker_acceptcb);
-      worker->w.data = worker.get();
-      ev_async_start(loop, &worker->w);
-
-      auto t = std::thread(run_worker, worker.get());
-      t.detach();
-      workers_.push_back(std::move(worker));
-    }
-  }
-  void accept_connection(int fd) {
-    if (config_->num_worker == 1) {
-      sessions_->accept_connection(fd);
-      return;
-    }
-
-    // Dispatch client to the one of the worker threads, in a round
-    // robin manner.
-    auto &worker = workers_[next_worker_];
-    if (next_worker_ == config_->num_worker - 1) {
-      next_worker_ = 0;
-    } else {
-      ++next_worker_;
-    }
-    {
-      std::lock_guard<std::mutex> lock(worker->m);
-      worker->q.push_back({fd});
-    }
-    ev_async_send(worker->sessions->get_loop(), &worker->w);
-  }
-
-private:
-  std::vector<std::unique_ptr<Worker>> workers_;
-  Sessions *sessions_;
-  const Config *config_;
-  // In multi threading mode, this points to the next thread that
-  // client will be dispatched.
-  size_t next_worker_;
-};
-
-*/
-
-/*
-namespace {
-void acceptcb(struct ev_loop *loop, ev_io *w, int revents);
-} // namespace
-
-class ListenEventHandler {
-public:
-  ListenEventHandler(Sessions *sessions, int fd,
-                     std::shared_ptr<AcceptHandler> acceptor)
-      : acceptor_(acceptor), sessions_(sessions), fd_(fd) {
-    ev_io_init(&w_, acceptcb, fd, EV_READ);
-    w_.data = this;
-    ev_io_start(sessions_->get_loop(), &w_);
-  }
-  void accept_connection() {
-    for (;;) {
-#ifdef HAVE_ACCEPT4
-      auto fd = accept4(fd_, nullptr, nullptr, SOCK_NONBLOCK);
-#else  // !HAVE_ACCEPT4
-      auto fd = accept(fd_, nullptr, nullptr);
-#endif // !HAVE_ACCEPT4
-      if (fd == -1) {
-        break;
-      }
-#ifndef HAVE_ACCEPT4
-      util::make_socket_nonblocking(fd);
-#endif // !HAVE_ACCEPT4
-      acceptor_->accept_connection(fd);
-    }
-  }
-
-private:
-  ev_io w_;
-  std::shared_ptr<AcceptHandler> acceptor_;
-  Sessions *sessions_;
-  int fd_;
-};
-
-namespace {
-void acceptcb(struct ev_loop *loop, ev_io *w, int revents) {
-  auto handler = static_cast<ListenEventHandler *>(w->data);
-  handler->accept_connection();
-}
-} // namespace
-
-*/
-
 namespace {
 FileEntry make_status_body(int status, uint16_t port) {
   BlockAllocator balloc(1024, 1024);
@@ -1919,94 +1634,6 @@ HttpServer::HttpServer(const Config *config) : config_(config) {
   };
 }
 
-
-namespace {
-int verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
-  // We don't verify the client certificate. Just request it for the
-  // testing purpose.
-  return 1;
-}
-} // namespace
-
-/*
-namespace {
-int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
-                 const Config *config) {
-  int r;
-  bool ok = false;
-  const char *addr = nullptr;
-
-  std::shared_ptr<AcceptHandler> acceptor;
-  auto service = util::utos(config->port);
-
-  addrinfo hints{};
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_flags = AI_PASSIVE;
-#ifdef AI_ADDRCONFIG
-  hints.ai_flags |= AI_ADDRCONFIG;
-#endif // AI_ADDRCONFIG
-
-  if (!config->address.empty()) {
-    addr = config->address.c_str();
-  }
-
-  addrinfo *res, *rp;
-  r = getaddrinfo(addr, service.c_str(), &hints, &res);
-  if (r != 0) {
-    std::cerr << "getaddrinfo() failed: " << gai_strerror(r) << std::endl;
-    return -1;
-  }
-
-  for (rp = res; rp; rp = rp->ai_next) {
-    int fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-    if (fd == -1) {
-      continue;
-    }
-    int val = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val,
-                   static_cast<socklen_t>(sizeof(val))) == -1) {
-      close(fd);
-      continue;
-    }
-    (void)util::make_socket_nonblocking(fd);
-#ifdef IPV6_V6ONLY
-    if (rp->ai_family == AF_INET6) {
-      if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &val,
-                     static_cast<socklen_t>(sizeof(val))) == -1) {
-        close(fd);
-        continue;
-      }
-    }
-#endif // IPV6_V6ONLY
-    if (bind(fd, rp->ai_addr, rp->ai_addrlen) == 0 && listen(fd, 1000) == 0) {
-      if (!acceptor) {
-        acceptor = std::make_shared<AcceptHandler>(sv, sessions, config);
-      }
-      new ListenEventHandler(sessions, fd, acceptor);
-
-      if (config->verbose) {
-        std::string s = util::numeric_name(rp->ai_addr, rp->ai_addrlen);
-        std::cout << (rp->ai_family == AF_INET ? "IPv4" : "IPv6") << ": listen "
-                  << s << ":" << config->port << std::endl;
-      }
-      ok = true;
-      continue;
-    } else {
-      std::cerr << strerror(errno) << std::endl;
-    }
-    close(fd);
-  }
-  freeaddrinfo(res);
-
-  if (!ok) {
-    return -1;
-  }
-  return 0;
-}
-} // namespace
-*/
-
 namespace {
 neat_error_code on_connected(struct neat_flow_operations *opCB) {
   std::cerr << ">>>>>> on_connect" << std::endl;
@@ -2031,19 +1658,16 @@ neat_error_code on_connected(struct neat_flow_operations *opCB) {
 } // namespace
 
 int HttpServer::run() {
-  SSL_CTX *ssl_ctx = nullptr;
-  std::vector<unsigned char> next_proto;
 
 
-  //auto loop = EV_DEFAULT;
   if ((this->ctx = neat_init_ctx()) == NULL) {
     std::cerr << "[ERROR] neat_init_ctx() failed" << std::endl;
-    //return -1;
+    return -1;
   }
 
   if ((this->flow = neat_new_flow(this->ctx)) == NULL) {
     std::cerr << "[ERROR] neat_new_flow() failed" << std::endl;
-    //return -1;
+    return -1;
   }
 
   neat_set_property(this->ctx, this->flow, config_property);
@@ -2058,23 +1682,13 @@ int HttpServer::run() {
   }
 
 
-  Sessions sessions(this, this->ctx->loop, config_, ssl_ctx);
+  Sessions sessions(this, this->ctx->loop, config_);
   std::cerr << "sessions PTR: " << &sessions << std::endl;
   this->ctx->loop->data = &sessions;
 
   neat_start_event_loop(this->ctx, NEAT_RUN_DEFAULT);
 
-  /*
-  if (start_listen(this, loop, &sessions, config_) != 0) {
-    std::cerr << "Could not listen" << std::endl;
-    if (ssl_ctx) {
-      SSL_CTX_free(ssl_ctx);
-    }
-    return -1;
-  }
-  */
 
-  //ev_run(loop, 0);
   return 0;
 }
 
