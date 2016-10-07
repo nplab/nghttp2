@@ -602,11 +602,6 @@ int Http2Handler::read_clear() {
   neat_error_code code;
   uint32_t bytes_read = 0;
 
-  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
-
-  std::cerr << ">>>>>>>>>> " << __func__ << " - ptr handler : " << this << std::endl; //<< " - flow : " << this->flow << std::endl;
-  std::cerr << ">>>>>>>>>> " << __func__ << " - ptr ctx : " << this->ctx << std::endl;
-
   for (;;) {
     code = neat_read(this->ctx, this->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
 
@@ -639,8 +634,6 @@ int Http2Handler::read_clear() {
 
 int Http2Handler::write_clear() {
   neat_error_code code;
-
-  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
 
   for (;;) {
     if (wb_.rleft() > 0) {
@@ -1541,6 +1534,12 @@ int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
     printf(" stream_id=%d closed\n", stream_id);
     fflush(stdout);
   }
+
+  hd->ops.on_readable = NULL;
+  hd->ops.on_writable = NULL;
+  neat_set_operations(hd->ctx, hd->flow, &hd->ops);
+  neat_free_flow(hd->flow);
+
   return 0;
 }
 } // namespace
