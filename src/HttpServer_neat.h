@@ -48,6 +48,8 @@
 #include "template.h"
 #include "allocator.h"
 
+#include "../../neat/neat_internal.h"
+
 namespace nghttp2 {
 
 struct Config {
@@ -157,7 +159,7 @@ class Sessions;
 
 class Http2Handler {
 public:
-  Http2Handler(Sessions *sessions, int fd, SSL *ssl, int64_t session_id);
+  Http2Handler(Sessions *sessions, neat_ctx *ctx, neat_flow *flow, int64_t session_id);
   ~Http2Handler();
 
   void remove_self();
@@ -202,7 +204,7 @@ public:
   int read_tls();
   int write_tls();
 
-  struct ev_loop *get_loop() const;
+  uv_loop_t *get_loop() const;
 
   using WriteBuf = Buffer<64_k>;
 
@@ -221,7 +223,10 @@ private:
   SSL *ssl_;
   const uint8_t *data_pending_;
   size_t data_pendinglen_;
-  int fd_;
+  neat_ctx *ctx;
+  neat_flow *flow;
+  neat_flow_operations ops;
+  //int fd_;
 };
 
 struct StatusPage {
@@ -236,6 +241,10 @@ public:
   int run();
   const Config *get_config() const;
   const StatusPage *get_status_page(int status) const;
+
+  neat_ctx *ctx;
+  neat_flow *flow;
+  neat_flow_operations ops;
 
 private:
   std::vector<StatusPage> status_pages_;

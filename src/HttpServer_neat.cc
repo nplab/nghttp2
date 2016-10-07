@@ -56,6 +56,8 @@
 #include <openssl/dh.h>
 
 #include <zlib.h>
+#include <neat/neat.h>
+#include "../../neat/neat_internal.h"
 
 #include "app_helper.h"
 #include "http2.h"
@@ -66,6 +68,19 @@
 #ifndef O_BINARY
 #define O_BINARY (0)
 #endif // O_BINARY
+
+static const char *config_property = "{\
+    \"transport\": [\
+        {\
+            \"value\": \"SCTP\",\
+            \"precedence\": 1\
+        },\
+        {\
+            \"value\": \"TCP\",\
+            \"precedence\": 1\
+        }\
+    ]\
+}";\
 
 namespace nghttp2 {
 
@@ -112,14 +127,15 @@ Config::Config()
 Config::~Config() {}
 
 namespace {
-void stream_timeout_cb(struct ev_loop *loop, uv_timer_t *w, int revents) {
+//void stream_timeout_cb(struct ev_loop *loop, uv_timer_t *w, int revents) {
+void stream_timeout_cb(uv_timer_t *w) {
   int rv;
   auto stream = static_cast<Stream *>(w->data);
   auto hd = stream->handler;
   auto config = hd->get_config();
 
-  uv_timer_stop(hd->get_loop(), &stream->rtimer);
-  uv_timer_stop(hd->get_loop(), &stream->wtimer);
+  uv_timer_stop(&stream->rtimer);
+  uv_timer_stop(&stream->wtimer);
 
   if (config->verbose) {
     print_session_id(hd->session_id());
@@ -139,15 +155,20 @@ void stream_timeout_cb(struct ev_loop *loop, uv_timer_t *w, int revents) {
 namespace {
 void add_stream_read_timeout(Stream *stream) {
   auto hd = stream->handler;
-  ev_timer_again(hd->get_loop(), &stream->rtimer);
+  auto config = hd->get_config();
+
+  if (uv_is_active((uv_handle_t *) &stream->rtimer)) {
+    uv_timer_again(&stream->rtimer);
+  } else if (config->stream_read_timeout) {
+    uv_timer_start(&stream->rtimer, stream_timeout_cb, 0, config->stream_read_timeout);
+  }
 }
 } // namespace
 
 namespace {
 void add_stream_read_timeout_if_pending(Stream *stream) {
-  auto hd = stream->handler;
-  if (ev_is_active(&stream->rtimer)) {
-    ev_timer_again(hd->get_loop(), &stream->rtimer);
+  if (uv_is_active((uv_handle_t *) &stream->rtimer)) {
+    uv_timer_again(&stream->rtimer);
   }
 }
 } // namespace
@@ -155,21 +176,25 @@ void add_stream_read_timeout_if_pending(Stream *stream) {
 namespace {
 void add_stream_write_timeout(Stream *stream) {
   auto hd = stream->handler;
-  ev_timer_again(hd->get_loop(), &stream->wtimer);
+  auto config = hd->get_config();
+
+  if (uv_is_active((uv_handle_t *) &stream->wtimer)) {
+    uv_timer_again(&stream->wtimer);
+  } else if (config->stream_write_timeout) {
+    uv_timer_start(&stream->wtimer, stream_timeout_cb, 0, config->stream_write_timeout);
+  }
 }
 } // namespace
 
 namespace {
 void remove_stream_read_timeout(Stream *stream) {
-  auto hd = stream->handler;
-  ev_timer_stop(hd->get_loop(), &stream->rtimer);
+  uv_timer_stop(&stream->rtimer);
 }
 } // namespace
 
 namespace {
 void remove_stream_write_timeout(Stream *stream) {
-  auto hd = stream->handler;
-  ev_timer_stop(hd->get_loop(), &stream->wtimer);
+  uv_timer_stop(&stream->wtimer);
 }
 } // namespace
 
@@ -178,15 +203,15 @@ void fill_callback(nghttp2_session_callbacks *callbacks, const Config *config);
 } // namespace
 
 namespace {
-constexpr ev_tstamp RELEASE_FD_TIMEOUT = 2.;
+constexpr uint64_t RELEASE_FD_TIMEOUT = 2000;
 } // namespace
 
 namespace {
-void release_fd_cb(struct ev_loop *loop, ev_timer *w, int revents);
+void release_fd_cb(uv_timer_t *w);
 } // namespace
 
 namespace {
-constexpr ev_tstamp FILE_ENTRY_MAX_AGE = 10.;
+constexpr uint64_t FILE_ENTRY_MAX_AGE = 10000;
 } // namespace
 
 namespace {
@@ -194,13 +219,13 @@ constexpr size_t FILE_ENTRY_EVICT_THRES = 2048;
 } // namespace
 
 namespace {
-bool need_validation_file_entry(const FileEntry *ent, ev_tstamp now) {
+bool need_validation_file_entry(const FileEntry *ent, uint64_t now) {
   return ent->last_valid + FILE_ENTRY_MAX_AGE < now;
 }
 } // namespace
 
 namespace {
-bool validate_file_entry(FileEntry *ent, ev_tstamp now) {
+bool validate_file_entry(FileEntry *ent, uint64_t now) {
   struct stat stbuf;
   int rv;
 
@@ -224,7 +249,7 @@ bool validate_file_entry(FileEntry *ent, ev_tstamp now) {
 
 class Sessions {
 public:
-  Sessions(HttpServer *sv, struct ev_loop *loop, const Config *config,
+  Sessions(HttpServer *sv, uv_loop_t *loop, const Config *config,
            SSL_CTX *ssl_ctx)
       : sv_(sv),
         loop_(loop),
@@ -232,17 +257,18 @@ public:
         ssl_ctx_(ssl_ctx),
         callbacks_(nullptr),
         next_session_id_(1),
-        tstamp_cached_(ev_now(loop)),
+        tstamp_cached_(uv_now(loop)),
         cached_date_(util::http_date(tstamp_cached_)) {
     nghttp2_session_callbacks_new(&callbacks_);
 
     fill_callback(callbacks_, config_);
 
-    ev_timer_init(&release_fd_timer_, release_fd_cb, 0., RELEASE_FD_TIMEOUT);
+    //ev_timer_init(&release_fd_timer_, release_fd_cb, 0., RELEASE_FD_TIMEOUT);
+    uv_timer_init(loop, &release_fd_timer_);
     release_fd_timer_.data = this;
   }
   ~Sessions() {
-    ev_timer_stop(loop_, &release_fd_timer_);
+    uv_timer_stop(&release_fd_timer_);
     for (auto handler : handlers_) {
       delete handler;
     }
@@ -252,7 +278,12 @@ public:
   void remove_handler(Http2Handler *handler) {
     handlers_.erase(handler);
     if (handlers_.empty() && !fd_cache_.empty()) {
-      ev_timer_again(loop_, &release_fd_timer_);
+      //ev_timer_again(loop_, &release_fd_timer_);
+      if (uv_is_active((uv_handle_t *) &release_fd_timer_)) {
+        uv_timer_again(&release_fd_timer_);
+      } else {
+        uv_timer_start(&release_fd_timer_, release_fd_cb, 0, RELEASE_FD_TIMEOUT);
+      }
     }
   }
   SSL_CTX *get_ssl_ctx() const { return ssl_ctx_; }
@@ -270,7 +301,7 @@ public:
     return ssl;
   }
   const Config *get_config() const { return config_; }
-  struct ev_loop *get_loop() const {
+  uv_loop_t *get_loop() const {
     return loop_;
   }
   int64_t get_next_session_id() {
@@ -283,28 +314,10 @@ public:
     return session_id;
   }
   const nghttp2_session_callbacks *get_callbacks() const { return callbacks_; }
-  void accept_connection(int fd) {
-    util::make_socket_nodelay(fd);
-    SSL *ssl = nullptr;
-    if (ssl_ctx_) {
-      ssl = ssl_session_new(fd);
-      if (!ssl) {
-        close(fd);
-        return;
-      }
-    }
-    auto handler =
-        make_unique<Http2Handler>(this, fd, ssl, get_next_session_id());
-    if (!ssl) {
-      if (handler->connection_made() != 0) {
-        return;
-      }
-    }
-    add_handler(handler.release());
-  }
+
   void update_cached_date() { cached_date_ = util::http_date(tstamp_cached_); }
   const std::string &get_cached_date() {
-    auto t = ev_now(loop_);
+    auto t = uv_now(loop_);
     if (t != tstamp_cached_) {
       tstamp_cached_ = t;
       update_cached_date();
@@ -317,7 +330,7 @@ public:
       return nullptr;
     }
 
-    auto now = ev_now(loop_);
+    auto now = uv_now(loop_);
 
     for (auto it = range.first; it != range.second;) {
       auto &ent = (*it).second;
@@ -404,21 +417,21 @@ private:
   std::multimap<std::string, std::unique_ptr<FileEntry>> fd_cache_;
   DList<FileEntry> fd_cache_lru_;
   HttpServer *sv_;
-  struct ev_loop *loop_;
+  uv_loop_t *loop_;
   const Config *config_;
   SSL_CTX *ssl_ctx_;
   nghttp2_session_callbacks *callbacks_;
-  ev_timer release_fd_timer_;
+  uv_timer_t release_fd_timer_;
   int64_t next_session_id_;
-  ev_tstamp tstamp_cached_;
+  uint64_t tstamp_cached_;
   std::string cached_date_;
 };
 
 namespace {
-void release_fd_cb(struct ev_loop *loop, ev_timer *w, int revents) {
+void release_fd_cb(uv_timer_t *w) {
   auto sessions = static_cast<Sessions *>(w->data);
 
-  ev_timer_stop(loop, w);
+  uv_timer_stop(w);
 
   if (!sessions->handlers_empty()) {
     return;
@@ -438,9 +451,13 @@ Stream::Stream(Http2Handler *handler, int32_t stream_id)
       header_buffer_size(0),
       stream_id(stream_id),
       echo_upload(false) {
-  auto config = handler->get_config();
-  ev_timer_init(&rtimer, stream_timeout_cb, 0., config->stream_read_timeout);
-  ev_timer_init(&wtimer, stream_timeout_cb, 0., config->stream_write_timeout);
+  //auto config = handler->get_config();
+  //ev_timer_init(&rtimer, stream_timeout_cb, 0., config->stream_read_timeout);
+  //ev_timer_init(&wtimer, stream_timeout_cb, 0., config->stream_write_timeout);
+
+  auto loop = handler->get_loop();
+  uv_timer_init(loop, &rtimer);
+  uv_timer_init(loop, &wtimer);
   rtimer.data = this;
   wtimer.data = this;
 }
@@ -460,9 +477,9 @@ Stream::~Stream() {
   nghttp2_rcbuf_decref(rcbuf.ims);
   nghttp2_rcbuf_decref(rcbuf.expect);
 
-  auto loop = handler->get_loop();
-  ev_timer_stop(loop, &rtimer);
-  ev_timer_stop(loop, &wtimer);
+
+  uv_timer_stop(&rtimer);
+  uv_timer_stop(&wtimer);
 }
 
 namespace {
@@ -476,7 +493,7 @@ void on_session_closed(Http2Handler *hd, int64_t session_id) {
 } // namespace
 
 namespace {
-void settings_timeout_cb(struct ev_loop *loop, ev_timer *w, int revents) {
+void settings_timeout_cb(uv_timer_t *w) {
   int rv;
   auto hd = static_cast<Http2Handler *>(w->data);
   hd->terminate_session(NGHTTP2_SETTINGS_TIMEOUT);
@@ -488,39 +505,57 @@ void settings_timeout_cb(struct ev_loop *loop, ev_timer *w, int revents) {
 } // namespace
 
 namespace {
-void readcb(struct ev_loop *loop, ev_io *w, int revents) {
+//void readcb(struct ev_loop *loop, ev_io *w, int revents) {
+neat_error_code on_readable(struct neat_flow_operations *opCB) {
   int rv;
-  auto handler = static_cast<Http2Handler *>(w->data);
+  auto handler = static_cast<Http2Handler *>(opCB->userData);
+
+  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
 
   rv = handler->on_read();
   if (rv == -1) {
     delete_handler(handler);
+    return NEAT_ERROR_IO;
   }
+
+  return NEAT_ERROR_OK;
 }
 } // namespace
 
 namespace {
-void writecb(struct ev_loop *loop, ev_io *w, int revents) {
+//void writecb(struct ev_loop *loop, ev_io *w, int revents) {
+neat_error_code on_writable(struct neat_flow_operations *opCB) {
   int rv;
-  auto handler = static_cast<Http2Handler *>(w->data);
+  auto handler = static_cast<Http2Handler *>(opCB->userData);
+
+  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
 
   rv = handler->on_write();
   if (rv == -1) {
     delete_handler(handler);
+    return NEAT_ERROR_IO;
   }
+  return NEAT_ERROR_OK;
 }
 } // namespace
 
-Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
+Http2Handler::Http2Handler(Sessions *sessions, neat_ctx *ctx, neat_flow *flow,
                            int64_t session_id)
     : session_id_(session_id),
       session_(nullptr),
       sessions_(sessions),
-      ssl_(ssl),
       data_pending_(nullptr),
       data_pendinglen_(0),
-      fd_(fd) {
-  ev_timer_init(&settings_timerev_, settings_timeout_cb, 10., 0.);
+      ctx(ctx),
+      flow(flow)
+       {
+  auto loop = sessions_->get_loop();
+  //ev_timer_init(&settings_timerev_, settings_timeout_cb, 10., 0.);
+
+  uv_timer_init(loop, &settings_timerev_);
+  settings_timerev_.data = this;
+
+  /*
   ev_io_init(&wev_, writecb, fd, EV_WRITE);
   ev_io_init(&rev_, readcb, fd, EV_READ);
 
@@ -528,17 +563,19 @@ Http2Handler::Http2Handler(Sessions *sessions, int fd, SSL *ssl,
   wev_.data = this;
   rev_.data = this;
 
-  auto loop = sessions_->get_loop();
+
+
   ev_io_start(loop, &rev_);
+
 
   if (ssl) {
     SSL_set_accept_state(ssl);
     read_ = &Http2Handler::tls_handshake;
     write_ = &Http2Handler::tls_handshake;
-  } else {
+  } else {*/
     read_ = &Http2Handler::read_clear;
     write_ = &Http2Handler::write_clear;
-  }
+  //}
 }
 
 Http2Handler::~Http2Handler() {
@@ -549,27 +586,30 @@ Http2Handler::~Http2Handler() {
     ERR_clear_error();
     SSL_shutdown(ssl_);
   }
-  auto loop = sessions_->get_loop();
-  ev_timer_stop(loop, &settings_timerev_);
-  ev_io_stop(loop, &rev_);
-  ev_io_stop(loop, &wev_);
+  //auto loop = sessions_->get_loop();
+  uv_timer_stop(&settings_timerev_);
+  //ev_io_stop(loop, &rev_);
+  //ev_io_stop(loop, &wev_);
+  /*
   if (ssl_) {
     SSL_free(ssl_);
   }
   shutdown(fd_, SHUT_WR);
   close(fd_);
+  */
 }
 
 void Http2Handler::remove_self() { sessions_->remove_handler(this); }
 
-struct ev_loop *Http2Handler::get_loop() const {
+uv_loop_t *Http2Handler::get_loop() const {
   return sessions_->get_loop();
 }
 
 Http2Handler::WriteBuf *Http2Handler::get_wb() { return &wb_; }
 
 void Http2Handler::start_settings_timer() {
-  ev_timer_start(sessions_->get_loop(), &settings_timerev_);
+  //ev_timer_start(sessions_->get_loop(), &settings_timerev_);
+  uv_timer_start(&settings_timerev_, settings_timeout_cb, 10000, 0);
 }
 
 int Http2Handler::fill_wb() {
@@ -611,8 +651,13 @@ int Http2Handler::fill_wb() {
 int Http2Handler::read_clear() {
   int rv;
   std::array<uint8_t, 8_k> buf;
+  neat_error_code code;
+  uint32_t bytes_read = 0;
+
+  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
 
   for (;;) {
+    /*
     ssize_t nread;
     while ((nread = read(fd_, buf.data(), buf.size())) == -1 && errno == EINTR)
       ;
@@ -624,13 +669,25 @@ int Http2Handler::read_clear() {
     }
     if (nread == 0) {
       return -1;
+    }*/
+
+    code = neat_read(this->ctx, this->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
+
+    if (code == NEAT_ERROR_WOULD_BLOCK) {
+        break;
+    } else if (code != NEAT_OK) {
+        return -1;
+    }
+
+    if (bytes_read == 0) {
+      return -1;
     }
 
     if (get_config()->hexdump) {
-      util::hexdump(stdout, buf.data(), nread);
+      util::hexdump(stdout, buf.data(), bytes_read);
     }
 
-    rv = nghttp2_session_mem_recv(session_, buf.data(), nread);
+    rv = nghttp2_session_mem_recv(session_, buf.data(), bytes_read);
     if (rv < 0) {
       if (rv != NGHTTP2_ERR_BAD_CLIENT_MAGIC) {
         std::cerr << "nghttp2_session_mem_recv() returned error: "
@@ -644,21 +701,35 @@ int Http2Handler::read_clear() {
 }
 
 int Http2Handler::write_clear() {
-  auto loop = sessions_->get_loop();
+  //auto loop = sessions_->get_loop();
+
+  neat_error_code code;
+
+  std::cerr << ">>>>>>>>>> " << __func__ << std::endl;
+
   for (;;) {
     if (wb_.rleft() > 0) {
+
+      /*
       ssize_t nwrite;
       while ((nwrite = write(fd_, wb_.pos, wb_.rleft())) == -1 &&
              errno == EINTR)
         ;
       if (nwrite == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          ev_io_start(loop, &wev_);
+          //ev_io_start(loop, &wev_);
           return 0;
         }
         return -1;
       }
-      wb_.drain(nwrite);
+      */
+      code = neat_write(this->ctx, this->flow, wb_.pos, wb_.rleft(), NULL, 0);
+      if (code == NEAT_ERROR_WOULD_BLOCK) {
+        return 0;
+      } else if (code != NEAT_OK) {
+        return -1;
+      }
+      wb_.drain(wb_.rleft());
       continue;
     }
     wb_.reset();
@@ -671,143 +742,10 @@ int Http2Handler::write_clear() {
   }
 
   if (wb_.rleft() == 0) {
-    ev_io_stop(loop, &wev_);
+    ops.on_writable = NULL;
+    neat_set_operations(this->ctx, this->flow, &ops);
   } else {
-    ev_io_start(loop, &wev_);
-  }
-
-  if (nghttp2_session_want_read(session_) == 0 &&
-      nghttp2_session_want_write(session_) == 0 && wb_.rleft() == 0) {
-    return -1;
-  }
-
-  return 0;
-}
-
-int Http2Handler::tls_handshake() {
-  ev_io_stop(sessions_->get_loop(), &wev_);
-
-  ERR_clear_error();
-
-  auto rv = SSL_do_handshake(ssl_);
-
-  if (rv <= 0) {
-    auto err = SSL_get_error(ssl_, rv);
-    switch (err) {
-    case SSL_ERROR_WANT_READ:
-      return 0;
-    case SSL_ERROR_WANT_WRITE:
-      ev_io_start(sessions_->get_loop(), &wev_);
-      return 0;
-    default:
-      return -1;
-    }
-  }
-
-  if (sessions_->get_config()->verbose) {
-    std::cerr << "SSL/TLS handshake completed" << std::endl;
-  }
-
-  if (verify_npn_result() != 0) {
-    return -1;
-  }
-
-  read_ = &Http2Handler::read_tls;
-  write_ = &Http2Handler::write_tls;
-
-  if (connection_made() != 0) {
-    return -1;
-  }
-
-  if (sessions_->get_config()->verbose) {
-    if (SSL_session_reused(ssl_)) {
-      std::cerr << "SSL/TLS session reused" << std::endl;
-    }
-  }
-
-  return 0;
-}
-
-int Http2Handler::read_tls() {
-  std::array<uint8_t, 8_k> buf;
-
-  ERR_clear_error();
-
-  for (;;) {
-    auto rv = SSL_read(ssl_, buf.data(), buf.size());
-
-    if (rv <= 0) {
-      auto err = SSL_get_error(ssl_, rv);
-      switch (err) {
-      case SSL_ERROR_WANT_READ:
-        goto fin;
-      case SSL_ERROR_WANT_WRITE:
-        // renegotiation started
-        return -1;
-      default:
-        return -1;
-      }
-    }
-
-    auto nread = rv;
-
-    if (get_config()->hexdump) {
-      util::hexdump(stdout, buf.data(), nread);
-    }
-
-    rv = nghttp2_session_mem_recv(session_, buf.data(), nread);
-    if (rv < 0) {
-      if (rv != NGHTTP2_ERR_BAD_CLIENT_MAGIC) {
-        std::cerr << "nghttp2_session_mem_recv() returned error: "
-                  << nghttp2_strerror(rv) << std::endl;
-      }
-      return -1;
-    }
-  }
-
-fin:
-  return write_(*this);
-}
-
-int Http2Handler::write_tls() {
-  auto loop = sessions_->get_loop();
-
-  ERR_clear_error();
-
-  for (;;) {
-    if (wb_.rleft() > 0) {
-      auto rv = SSL_write(ssl_, wb_.pos, wb_.rleft());
-
-      if (rv <= 0) {
-        auto err = SSL_get_error(ssl_, rv);
-        switch (err) {
-        case SSL_ERROR_WANT_READ:
-          // renegotiation started
-          return -1;
-        case SSL_ERROR_WANT_WRITE:
-          ev_io_start(sessions_->get_loop(), &wev_);
-          return 0;
-        default:
-          return -1;
-        }
-      }
-
-      wb_.drain(rv);
-      continue;
-    }
-    wb_.reset();
-    if (fill_wb() != 0) {
-      return -1;
-    }
-    if (wb_.rleft() == 0) {
-      break;
-    }
-  }
-
-  if (wb_.rleft() == 0) {
-    ev_io_stop(loop, &wev_);
-  } else {
-    ev_io_start(loop, &wev_);
+    //ev_io_start(loop, &wev_);
   }
 
   if (nghttp2_session_want_read(session_) == 0 &&
@@ -826,6 +764,8 @@ int Http2Handler::connection_made() {
   int r;
 
   r = nghttp2_session_server_new(&session_, sessions_->get_callbacks(), this);
+
+  std::cerr << __func__ << " - session ptr : " << session_ << std::endl;
 
   if (r != 0) {
     return r;
@@ -1057,7 +997,7 @@ const Config *Http2Handler::get_config() const {
 }
 
 void Http2Handler::remove_settings_timer() {
-  ev_timer_stop(sessions_->get_loop(), &settings_timerev_);
+  uv_timer_stop(&settings_timerev_);
 }
 
 void Http2Handler::terminate_session(uint32_t error_code) {
@@ -1345,7 +1285,7 @@ void prepare_response(Stream *stream, Http2Handler *hd,
 
     file_ent = sessions->cache_fd(
         file_path, FileEntry(file_path, buf.st_size, buf.st_mtime, file,
-                             content_type, ev_now(sessions->get_loop())));
+                             content_type, uv_now(sessions->get_loop())));
   }
 
   stream->file_ent = file_ent;
@@ -1759,18 +1699,22 @@ void fill_callback(nghttp2_session_callbacks *callbacks, const Config *config) {
 }
 } // namespace
 
+/*
 struct ClientInfo {
   int fd;
 };
-
+*/
+/*
 struct Worker {
   std::unique_ptr<Sessions> sessions;
-  ev_async w;
+  //ev_async w;
   // protectes q
   std::mutex m;
   std::deque<ClientInfo> q;
 };
+*/
 
+/*
 namespace {
 void worker_acceptcb(struct ev_loop *loop, ev_async *w, int revents) {
   auto worker = static_cast<Worker *>(w->data);
@@ -1787,7 +1731,9 @@ void worker_acceptcb(struct ev_loop *loop, ev_async *w, int revents) {
   }
 }
 } // namespace
+*/
 
+/*
 namespace {
 void run_worker(Worker *worker) {
   auto loop = worker->sessions->get_loop();
@@ -1805,6 +1751,10 @@ int get_ev_loop_flags() {
   return 0;
 }
 } // namespace
+
+*/
+
+/*
 
 class AcceptHandler {
 public:
@@ -1860,6 +1810,9 @@ private:
   size_t next_worker_;
 };
 
+*/
+
+/*
 namespace {
 void acceptcb(struct ev_loop *loop, ev_io *w, int revents);
 } // namespace
@@ -1903,6 +1856,8 @@ void acceptcb(struct ev_loop *loop, ev_io *w, int revents) {
   handler->accept_connection();
 }
 } // namespace
+
+*/
 
 namespace {
 FileEntry make_status_body(int status, uint16_t port) {
@@ -1964,15 +1919,6 @@ HttpServer::HttpServer(const Config *config) : config_(config) {
   };
 }
 
-namespace {
-int next_proto_cb(SSL *s, const unsigned char **data, unsigned int *len,
-                  void *arg) {
-  auto next_proto = static_cast<std::vector<unsigned char> *>(arg);
-  *data = next_proto->data();
-  *len = next_proto->size();
-  return SSL_TLSEXT_ERR_OK;
-}
-} // namespace
 
 namespace {
 int verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
@@ -1982,6 +1928,7 @@ int verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
 }
 } // namespace
 
+/*
 namespace {
 int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
                  const Config *config) {
@@ -2058,137 +2005,66 @@ int start_listen(HttpServer *sv, struct ev_loop *loop, Sessions *sessions,
   return 0;
 }
 } // namespace
+*/
 
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L
 namespace {
-int alpn_select_proto_cb(SSL *ssl, const unsigned char **out,
-                         unsigned char *outlen, const unsigned char *in,
-                         unsigned int inlen, void *arg) {
-  auto config = static_cast<HttpServer *>(arg)->get_config();
-  if (config->verbose) {
-    std::cout << "[ALPN] client offers:" << std::endl;
+neat_error_code on_connected(struct neat_flow_operations *opCB) {
+  std::cerr << ">>>>>> on_connect" << std::endl;
+
+  Sessions *sessions = (Sessions *) opCB->ctx->loop->data;
+
+  std::cerr << ">>>>>> on_connect - ptr: " << sessions << std::endl;
+
+  auto handler = make_unique<Http2Handler>(sessions, opCB->ctx, opCB->flow, sessions->get_next_session_id());
+  opCB->userData = &handler;
+  std::cerr << ">>>>>> on_connect" << std::endl;
+
+  if (handler->connection_made() != 0) {
+    std::cerr << ">>>>>> on_connect - connection_made failed" << std::endl;
+    return NEAT_ERROR_IO;
   }
-  if (config->verbose) {
-    for (unsigned int i = 0; i < inlen; i += in [i] + 1) {
-      std::cout << " * ";
-      std::cout.write(reinterpret_cast<const char *>(&in[i + 1]), in[i]);
-      std::cout << std::endl;
-    }
-  }
-  if (!util::select_h2(out, outlen, in, inlen)) {
-    return SSL_TLSEXT_ERR_NOACK;
-  }
-  return SSL_TLSEXT_ERR_OK;
+
+  sessions->add_handler(handler.release());
+
+  return NEAT_ERROR_OK;
 }
 } // namespace
-#endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
 
 int HttpServer::run() {
   SSL_CTX *ssl_ctx = nullptr;
   std::vector<unsigned char> next_proto;
 
-  if (!config_->no_tls) {
-    ssl_ctx = SSL_CTX_new(SSLv23_server_method());
-    if (!ssl_ctx) {
-      std::cerr << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
-      return -1;
-    }
 
-    auto ssl_opts = (SSL_OP_ALL & ~SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS) |
-                    SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION |
-                    SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION |
-                    SSL_OP_SINGLE_ECDH_USE | SSL_OP_NO_TICKET |
-                    SSL_OP_CIPHER_SERVER_PREFERENCE;
-
-    SSL_CTX_set_options(ssl_ctx, ssl_opts);
-    SSL_CTX_set_mode(ssl_ctx, SSL_MODE_AUTO_RETRY);
-    SSL_CTX_set_mode(ssl_ctx, SSL_MODE_RELEASE_BUFFERS);
-
-    if (SSL_CTX_set_cipher_list(ssl_ctx, ssl::DEFAULT_CIPHER_LIST) == 0) {
-      std::cerr << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
-      return -1;
-    }
-
-    const unsigned char sid_ctx[] = "nghttpd";
-    SSL_CTX_set_session_id_context(ssl_ctx, sid_ctx, sizeof(sid_ctx) - 1);
-    SSL_CTX_set_session_cache_mode(ssl_ctx, SSL_SESS_CACHE_SERVER);
-
-#ifndef OPENSSL_NO_EC
-
-    // Disabled SSL_CTX_set_ecdh_auto, because computational cost of
-    // chosen curve is much higher than P-256.
-
-    // #if OPENSSL_VERSION_NUMBER >= 0x10002000L
-    //     SSL_CTX_set_ecdh_auto(ssl_ctx, 1);
-    // #else // OPENSSL_VERSION_NUBMER < 0x10002000L
-    // Use P-256, which is sufficiently secure at the time of this
-    // writing.
-    auto ecdh = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
-    if (ecdh == nullptr) {
-      std::cerr << "EC_KEY_new_by_curv_name failed: "
-                << ERR_error_string(ERR_get_error(), nullptr);
-      return -1;
-    }
-    SSL_CTX_set_tmp_ecdh(ssl_ctx, ecdh);
-    EC_KEY_free(ecdh);
-// #endif // OPENSSL_VERSION_NUBMER < 0x10002000L
-
-#endif // OPENSSL_NO_EC
-
-    if (!config_->dh_param_file.empty()) {
-      // Read DH parameters from file
-      auto bio = BIO_new_file(config_->dh_param_file.c_str(), "r");
-      if (bio == nullptr) {
-        std::cerr << "BIO_new_file() failed: "
-                  << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
-        return -1;
-      }
-
-      auto dh = PEM_read_bio_DHparams(bio, nullptr, nullptr, nullptr);
-
-      if (dh == nullptr) {
-        std::cerr << "PEM_read_bio_DHparams() failed: "
-                  << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
-        return -1;
-      }
-
-      SSL_CTX_set_tmp_dh(ssl_ctx, dh);
-      DH_free(dh);
-      BIO_free(bio);
-    }
-
-    if (SSL_CTX_use_PrivateKey_file(ssl_ctx, config_->private_key_file.c_str(),
-                                    SSL_FILETYPE_PEM) != 1) {
-      std::cerr << "SSL_CTX_use_PrivateKey_file failed." << std::endl;
-      return -1;
-    }
-    if (SSL_CTX_use_certificate_chain_file(ssl_ctx,
-                                           config_->cert_file.c_str()) != 1) {
-      std::cerr << "SSL_CTX_use_certificate_file failed." << std::endl;
-      return -1;
-    }
-    if (SSL_CTX_check_private_key(ssl_ctx) != 1) {
-      std::cerr << "SSL_CTX_check_private_key failed." << std::endl;
-      return -1;
-    }
-    if (config_->verify_client) {
-      SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE |
-                                      SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
-                         verify_callback);
-    }
-
-    next_proto = util::get_default_alpn();
-
-    SSL_CTX_set_next_protos_advertised_cb(ssl_ctx, next_proto_cb, &next_proto);
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L
-    // ALPN selection callback
-    SSL_CTX_set_alpn_select_cb(ssl_ctx, alpn_select_proto_cb, this);
-#endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
+  //auto loop = EV_DEFAULT;
+  if ((this->ctx = neat_init_ctx()) == NULL) {
+    std::cerr << "[ERROR] neat_init_ctx() failed" << std::endl;
+    //return -1;
   }
 
-  auto loop = EV_DEFAULT;
+  if ((this->flow = neat_new_flow(this->ctx)) == NULL) {
+    std::cerr << "[ERROR] neat_new_flow() failed" << std::endl;
+    //return -1;
+  }
 
-  Sessions sessions(this, loop, config_, ssl_ctx);
+  neat_set_property(this->ctx, this->flow, config_property);
+  memset(&ops, 0, sizeof(ops));
+
+  ops.on_connected = on_connected;
+  neat_set_operations(this->ctx, this->flow, &ops);
+  // wait for on_connected or on_error to be invoked
+  if (neat_accept(this->ctx, this->flow, 8080, NULL, 0)) {
+      std::cerr << "[ERROR] neat_accept() failed" << std::endl;
+      return -1;
+  }
+
+
+  Sessions sessions(this, this->ctx->loop, config_, ssl_ctx);
+  std::cerr << "sessions PTR: " << &sessions << std::endl;
+  this->ctx->loop->data = &sessions;
+
+  neat_start_event_loop(this->ctx, NEAT_RUN_DEFAULT);
+
+  /*
   if (start_listen(this, loop, &sessions, config_) != 0) {
     std::cerr << "Could not listen" << std::endl;
     if (ssl_ctx) {
@@ -2196,8 +2072,9 @@ int HttpServer::run() {
     }
     return -1;
   }
+  */
 
-  ev_run(loop, 0);
+  //ev_run(loop, 0);
   return 0;
 }
 
