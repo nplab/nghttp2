@@ -202,14 +202,13 @@ public:
   int read_tls();
   int write_tls();
 
-  uv_loop_t *get_loop() const;
-
   using WriteBuf = Buffer<64_k>;
 
   WriteBuf *get_wb();
-  neat_flow_operations ops;
+
   neat_ctx *ctx;
   neat_flow *flow;
+  neat_flow_operations *ops;
 
 private:
   //ev_io wev_;
