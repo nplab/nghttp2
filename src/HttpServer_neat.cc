@@ -124,7 +124,6 @@ Config::~Config() {}
 
 namespace {
 void stream_timeout_cb(uv_timer_t *w) {
-  int rv;
   auto stream = static_cast<Stream *>(w->data);
   auto hd = stream->handler;
   auto config = hd->get_config();
@@ -139,11 +138,7 @@ void stream_timeout_cb(uv_timer_t *w) {
   }
 
   hd->submit_rst_stream(stream, NGHTTP2_INTERNAL_ERROR);
-
-  rv = hd->on_write();
-  if (rv == -1) {
-    delete_handler(hd);
-  }
+  hd->on_write();
 }
 } // namespace
 
@@ -257,7 +252,6 @@ public:
     fill_callback(callbacks_, config_);
 
     uv_timer_init(loop, &release_fd_timer_);
-    std::cerr << ">>>>>>>>>>>>> release_fd_timer : " << &release_fd_timer_ << std::endl;
     release_fd_timer_.data = this;
   }
   ~Sessions() {
@@ -436,9 +430,6 @@ Stream::Stream(Http2Handler *handler, int32_t stream_id)
   uv_timer_init(loop, &wtimer);
   rtimer.data = this;
   wtimer.data = this;
-
-  std::cerr << ">>>>>>>>>>>>> rtimer : " << &rtimer << std::endl;
-  std::cerr << ">>>>>>>>>>>>> rtimer : " << &rtimer << std::endl;
 }
 
 Stream::~Stream() {
@@ -463,17 +454,12 @@ Stream::~Stream() {
 
 namespace {
 neat_error_code on_close(struct neat_flow_operations *opCB) {
-  auto handler = static_cast<Http2Handler *>(opCB->userData);
-
-  std::cerr << ">>>>>>>>>>>>>>>>>>>>> on_close" << std::endl;
-
   return NEAT_ERROR_OK;
 }
 } // namespace
 
 namespace {
 void on_session_closed(Http2Handler *hd, int64_t session_id) {
-  std::cerr << ">>>>>>>>>>>>>>>>>>>>> on_session_closed" << std::endl;
   if (hd->get_config()->verbose) {
     print_session_id(session_id);
     print_timer();
@@ -484,50 +470,106 @@ void on_session_closed(Http2Handler *hd, int64_t session_id) {
 
 namespace {
 void settings_timeout_cb(uv_timer_t *w) {
-  int rv;
   auto hd = static_cast<Http2Handler *>(w->data);
-  std::cerr << ">>>>>>>>>>>>>>>>>>>>> settings_timeout_cb" << std::endl;
   hd->terminate_session(NGHTTP2_SETTINGS_TIMEOUT);
-  rv = hd->on_write();
-  if (rv == -1) {
-    delete_handler(hd);
+  hd->on_write();
+}
+} // namespace
+
+namespace {
+neat_error_code on_writable(struct neat_flow_operations *opCB) {
+  neat_error_code code;
+  auto handler = static_cast<Http2Handler *>(opCB->userData);
+  Http2Handler::WriteBuf *wb = handler->get_wb();
+
+  if (handler->get_config()->verbose) {
+    std::cerr << __func__ << std::endl;
   }
+
+  for (;;) {
+    if (wb->rleft() > 0) {
+      code = neat_write(opCB->ctx, opCB->flow, wb->pos, wb->rleft(), NULL, 0);
+      if (code == NEAT_ERROR_WOULD_BLOCK) {
+        std::cerr << __func__ << " - neat_write() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
+        return 0;
+      } else if (code != NEAT_OK) {
+        std::cerr << __func__ << " - neat_write() - NEAT_ERROR - closing connection" << std::endl;
+        delete_handler(handler);
+        return -1;
+      }
+      wb->drain(wb->rleft());
+      continue;
+    }
+    wb->reset();
+    if (handler->fill_wb() != 0) {
+      delete_handler(handler);
+      return -1;
+    }
+    if (wb->rleft() == 0) {
+      break;
+    }
+  }
+
+  // nothing left to write, stopping read CB
+  if (wb->rleft() == 0) {
+    std::cerr << __func__ << " - neat_write() - rfleft == 0 - stopping write CB" << std::endl;
+    opCB->on_writable = NULL;
+    neat_set_operations(opCB->ctx, opCB->flow, opCB);
+  }
+
+  if (nghttp2_session_want_read(handler->get_session()) == 0 && nghttp2_session_want_write(handler->get_session()) == 0 && wb->rleft() == 0) {
+    delete_handler(handler);
+    return -1;
+  }
+
+  return 0;
 }
 } // namespace
 
 namespace {
 neat_error_code on_readable(struct neat_flow_operations *opCB) {
   int rv;
+  std::array<uint8_t, 8_k> buf;
+  neat_error_code code = 0;
+  uint32_t bytes_read = 0;
   auto handler = static_cast<Http2Handler *>(opCB->userData);
-  rv = handler->on_read();
-  if (rv == -1) {
-    std::cerr << ">>>>>>>>>>>>>>>>>>>>> on_readable - closed" << std::endl;
 
-    opCB->on_readable = NULL;
-    opCB->on_writable = NULL;
-    std::cerr << ">>>>>>>>>>>>> neat_set_operations - " << __func__ << std::endl;
-    neat_set_operations(opCB->ctx, opCB->flow, opCB);
+  if (handler->get_config()->verbose) {
+    std::cerr << __func__ << std::endl;
+  }
 
+  code = neat_read(handler->ctx, handler->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
+  if (code != NEAT_OK) {
+    if (code == NEAT_ERROR_WOULD_BLOCK) {
+      std::cerr << __func__ << " - neat_read() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
+      return code;
+    }
+      std::cerr << __func__ << " - neat_read() - NEAT_ERROR - closing connection" << std::endl;
+      delete_handler(handler);
+      return NEAT_ERROR_IO;
+  }
+
+  /* nothing read - closing */
+  if (bytes_read == 0) {
     delete_handler(handler);
     return NEAT_ERROR_IO;
   }
 
-  return NEAT_ERROR_OK;
-}
-} // namespace
-
-namespace {
-neat_error_code on_writable(struct neat_flow_operations *opCB) {
-  int rv;
-  auto handler = static_cast<Http2Handler *>(opCB->userData);
-
-  std::cerr << ">>>>>>>>>>>>>>>>>>>>> on_writable" << std::endl;
-
-  rv = handler->on_write();
-  if (rv == -1) {
-    delete_handler(handler);
-    return NEAT_ERROR_IO;
+  if (handler->get_config()->hexdump) {
+    util::hexdump(stdout, buf.data(), bytes_read);
   }
+
+  rv = nghttp2_session_mem_recv(handler->get_session(), buf.data(), bytes_read);
+  if (rv < 0) {
+    if (rv != NGHTTP2_ERR_BAD_CLIENT_MAGIC) {
+      std::cerr << __func__ << " - nghttp2_session_mem_recv() returned error: " << nghttp2_strerror(rv) << std::endl;
+    }
+    return NEAT_ERROR_INTERNAL;
+  }
+
+  opCB->on_writable = on_writable;
+  neat_set_operations(opCB->ctx, opCB->flow, opCB);
+
   return NEAT_ERROR_OK;
 }
 } // namespace
@@ -536,9 +578,11 @@ namespace {
 neat_error_code on_connected(struct neat_flow_operations *opCB) {
   Sessions *sessions = (Sessions *) opCB->ctx->loop->data;
   auto handler = make_unique<Http2Handler>(sessions, opCB->ctx, opCB->flow, sessions->get_next_session_id());
-  std::cerr << ">>>>>>>>>>>>>>>>>>>>> on_connected" << std::endl;
   handler->ops = opCB;
 
+  if (handler->get_config()->verbose) {
+    std::cerr << __func__ << std::endl;
+  }
 
   if (handler->connection_made() != 0) {
     std::cerr << __func__ << " - connection_made() failed" << std::endl;
@@ -549,12 +593,7 @@ neat_error_code on_connected(struct neat_flow_operations *opCB) {
   opCB->on_connected = NULL;
   opCB->on_writable = on_writable;
   opCB->on_readable = on_readable;
-  opCB->on_close = on_close;
-  opCB->on_error = on_close;
-  opCB->on_aborted = on_close;
-  opCB->on_all_written = on_close;
   opCB->userData = handler.get();
-  std::cerr << ">>>>>>>>>>>>> neat_set_operations - " << __func__ << std::endl;
   neat_set_operations(opCB->ctx, opCB->flow, opCB);
 
   sessions->add_handler(handler.release());
@@ -578,9 +617,6 @@ Http2Handler::Http2Handler(Sessions *sessions, neat_ctx *ctx, neat_flow *flow,
 
   uv_timer_init(ctx->loop, &settings_timerev_);
   settings_timerev_.data = this;
-
-  std::cerr << ">>>>>>>>>>>>> setting_timer : " << &settings_timerev_ << std::endl;
-
 }
 
 Http2Handler::~Http2Handler() {
@@ -588,18 +624,18 @@ Http2Handler::~Http2Handler() {
   nghttp2_session_del(session_);
   uv_timer_stop(&settings_timerev_);
 
-  std::cerr << ">>>>>>>>>>>>> wbbuf : " << &wb_ << std::endl;
-
   this->ops->on_readable = NULL;
   this->ops->on_writable = NULL;
-  std::cerr << ">>>>>>>>>>>>> neat_set_operations - " << __func__ << std::endl;
   neat_set_operations(this->ctx, this->flow, this->ops);
+  //neat_close(this->ctx, this->flow);
   //neat_free_flow(flow);
+  // XXX felix : das passt hier noch nicht...
 }
 
 void Http2Handler::remove_self() { sessions_->remove_handler(this); }
 
 Http2Handler::WriteBuf *Http2Handler::get_wb() { return &wb_; }
+nghttp2_session *Http2Handler::get_session() { return session_; }
 
 void Http2Handler::start_settings_timer() {
   uv_timer_start(&settings_timerev_, settings_timeout_cb, 10000, 0);
@@ -641,87 +677,11 @@ int Http2Handler::fill_wb() {
   return 0;
 }
 
-int Http2Handler::read_clear() {
-  int rv;
-  std::array<uint8_t, 8_k> buf;
-  neat_error_code code;
-  uint32_t bytes_read = 0;
-
-  std::cerr << ">>>>>>>>>>>>>>>>>> " << __func__ << std::endl;
-
-  for (;;) {
-    code = neat_read(this->ctx, this->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
-
-    if (code == NEAT_ERROR_WOULD_BLOCK) {
-        break;
-    } else if (code != NEAT_OK) {
-        return -1;
-    }
-
-    if (bytes_read == 0) {
-      return -1;
-    }
-
-    if (get_config()->hexdump) {
-      util::hexdump(stdout, buf.data(), bytes_read);
-    }
-
-    rv = nghttp2_session_mem_recv(session_, buf.data(), bytes_read);
-    if (rv < 0) {
-      if (rv != NGHTTP2_ERR_BAD_CLIENT_MAGIC) {
-        std::cerr << "nghttp2_session_mem_recv() returned error: "
-                  << nghttp2_strerror(rv) << std::endl;
-      }
-      return -1;
-    }
-  }
-
-  return write_clear();
-}
-
-int Http2Handler::write_clear() {
-  neat_error_code code;
-  std::cerr << ">>>>>>>>>>>>>>>>>> " << __func__ << std::endl;
-  for (;;) {
-    if (wb_.rleft() > 0) {
-      code = neat_write(this->ctx, this->flow, wb_.pos, wb_.rleft(), NULL, 0);
-      if (code == NEAT_ERROR_WOULD_BLOCK) {
-        return 0;
-      } else if (code != NEAT_OK) {
-        return -1;
-      }
-      wb_.drain(wb_.rleft());
-      continue;
-    }
-    wb_.reset();
-    if (fill_wb() != 0) {
-      return -1;
-    }
-    if (wb_.rleft() == 0) {
-      break;
-    }
-  }
-
-  if (wb_.rleft() == 0) {
-
-    this->ops->on_writable = NULL;
-    std::cerr << ">>>>>>>>>>>>> neat_set_operations - " << __func__ << std::endl;
-    neat_set_operations(this->ctx, this->flow, this->ops);
-  } else {
-    //ev_io_start(loop, &wev_);
-  }
-
-  if (nghttp2_session_want_read(session_) == 0 &&
-      nghttp2_session_want_write(session_) == 0 && wb_.rleft() == 0) {
-    return -1;
-  }
-
+int Http2Handler::on_write() {
+  ops->on_writable = on_writable;
+  neat_set_operations(ctx, flow, ops);
   return 0;
 }
-
-int Http2Handler::on_read() { return read_clear(); }
-
-int Http2Handler::on_write() { return write_clear(); }
 
 int Http2Handler::connection_made() {
   int r;
@@ -765,7 +725,10 @@ int Http2Handler::connection_made() {
     }
   }
 
-  return on_write();
+  ops->on_writable = on_writable;
+  neat_set_operations(ctx, flow, ops);
+
+  return 0;
 }
 
 int Http2Handler::submit_file_response(const StringRef &status, Stream *stream,
@@ -1709,14 +1672,13 @@ int HttpServer::run() {
   memset(&this->ops, 0, sizeof(ops));
 
   this->ops.on_connected = on_connected;
-  std::cerr << ">>>>>>>>>>>>> neat_set_operations - " << __func__ << std::endl;
+  this->ops.on_close = on_close;
   neat_set_operations(this->ctx, this->flow, &ops);
   // wait for on_connected or on_error to be invoked
   if (neat_accept(this->ctx, this->flow, 8080, NULL, 0)) {
       std::cerr << "[ERROR] neat_accept() failed" << std::endl;
       return -1;
   }
-
 
   Sessions sessions(this, this->ctx->loop, config_);
   std::cerr << __func__ << " - ptr sessions : " << &sessions << std::endl;

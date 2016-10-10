@@ -162,7 +162,6 @@ public:
 
   void remove_self();
   void start_settings_timer();
-  int on_read();
   int on_write();
   int connection_made();
   int verify_npn_result();
@@ -196,23 +195,16 @@ public:
 
   int fill_wb();
 
-  int read_clear();
-  int write_clear();
-  int tls_handshake();
-  int read_tls();
-  int write_tls();
-
   using WriteBuf = Buffer<64_k>;
 
   WriteBuf *get_wb();
+  nghttp2_session *get_session();
 
   neat_ctx *ctx;
   neat_flow *flow;
   neat_flow_operations *ops;
 
 private:
-  //ev_io wev_;
-  //ev_io rev_;
   uv_timer_t settings_timerev_;
   std::map<int32_t, std::unique_ptr<Stream>> id2stream_;
   WriteBuf wb_;
@@ -221,9 +213,6 @@ private:
   Sessions *sessions_;
   const uint8_t *data_pending_;
   size_t data_pendinglen_;
-
-
-  //int fd_;
 };
 
 struct StatusPage {
