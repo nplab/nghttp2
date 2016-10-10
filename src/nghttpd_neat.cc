@@ -41,14 +41,11 @@
 #include <iostream>
 #include <string>
 
-#include <openssl/ssl.h>
-#include <openssl/err.h>
 #include <nghttp2/nghttp2.h>
 
 #include "app_helper.h"
 #include "HttpServer.h"
 #include "util.h"
-#include "ssl.h"
 
 namespace nghttp2 {
 
@@ -182,11 +179,6 @@ Options:
 } // namespace
 
 int main(int argc, char **argv) {
-  ssl::libssl_init();
-
-#ifndef NOTHREADS
-  ssl::LibsslGlobalLock lock;
-#endif // NOTHREADS
 
   Config config;
   bool color = false;

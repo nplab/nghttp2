@@ -41,8 +41,6 @@
 #include <chrono>
 #include <memory>
 
-#include <openssl/ssl.h>
-
 #include <nghttp2/nghttp2.h>
 
 #include "http-parser/http_parser.h"
@@ -204,7 +202,7 @@ struct SessionTiming {
 enum class ClientState { IDLE, CONNECTED };
 
 struct HttpClient {
-  HttpClient(const nghttp2_session_callbacks *callbacks, SSL_CTX *ssl_ctx);
+  HttpClient(const nghttp2_session_callbacks *callbacks);
   ~HttpClient();
 
   bool need_upgrade() const;
@@ -213,14 +211,9 @@ struct HttpClient {
   void disconnect();
 
   int noop();
-  int read_clear();
   int write_clear();
   int connected();
-  int tls_handshake();
-  int read_tls();
-  int write_tls();
 
-  int do_read();
   int do_write();
 
   int on_upgrade_connect();
@@ -280,9 +273,6 @@ struct HttpClient {
   std::function<int(HttpClient &)> on_writefn;
   nghttp2_session *session;
   const nghttp2_session_callbacks *callbacks;
-  //struct ev_loop *loop;
-  SSL_CTX *ssl_ctx;
-  SSL *ssl;
   addrinfo *addrs;
   addrinfo *next_addr;
   addrinfo *cur_addr;
