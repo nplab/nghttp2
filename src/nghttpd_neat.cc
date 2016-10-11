@@ -44,7 +44,7 @@
 #include <nghttp2/nghttp2.h>
 
 #include "app_helper.h"
-#include "HttpServer_neat.h"
+#include "HttpServer.h"
 #include "util.h"
 
 namespace nghttp2 {
