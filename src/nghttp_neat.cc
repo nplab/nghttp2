@@ -71,10 +71,6 @@ static const char *config_property = "{\
         {\
             \"value\": \"SCTP\",\
             \"precedence\": 1\
-        },\
-        {\
-            \"value\": \"TCP\",\
-            \"precedence\": 1\
         }\
     ]\
 }";\
@@ -529,7 +525,7 @@ neat_error_code on_connect(struct neat_flow_operations *opCB) {
 namespace {
 neat_error_code on_readable(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
-  std::array<uint8_t, 8_k> buf;
+  std::array<uint8_t, 128_k> buf;
   uint32_t bytes_read = 0;
   neat_error_code code;
 
@@ -638,7 +634,11 @@ HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks)
       state(ClientState::IDLE),
       upgrade_response_status_code(0),
       upgrade_response_complete(false) {
+  
 
+  NEAT_OPTARGS_DECLARE(NEAT_OPTARGS_MAX);
+  NEAT_OPTARGS_INIT();
+  NEAT_OPTARG_INT(NEAT_TAG_STREAM_COUNT, 2048);
 
   if ((this->ctx = neat_init_ctx()) == NULL) {
     std::cerr << "[ERROR] neat_init_ctx() failed" << std::endl;
@@ -719,8 +719,6 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
   neat_set_operations(ctx, flow, &ops);
 
   std::cerr << ">>>>> FELIX : neat open ctx: " << ctx << " - host: " << host.c_str() << std::endl;
-
-
 
   if (neat_open(ctx, flow, host.c_str(), port, NULL, 0) != NEAT_OK) {
     std::cerr << "[ERROR] neat_open() failed - ctx: " << ctx << " - host: " << host << " - port: " << port << std::endl;
