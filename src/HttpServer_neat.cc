@@ -488,6 +488,7 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
 
   for (;;) {
     if (wb->rleft() > 0) {
+      std::cerr << __func__ << " - sending " << wb->rleft() << " bytes" << std::endl;
       code = neat_write(opCB->ctx, opCB->flow, wb->pos, wb->rleft(), NULL, 0);
       if (code == NEAT_ERROR_WOULD_BLOCK) {
         std::cerr << __func__ << " - neat_write() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
@@ -553,6 +554,15 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   if (bytes_read == 0) {
     delete_handler(handler);
     return NEAT_ERROR_IO;
+  }
+
+  if (handler->get_config()->verbose) {
+    if (opCB->stream_id == NEAT_INVALID_STREAM) {
+      std::cerr << __func__ << " - neat_read() - bytes read : " << bytes_read << std::endl;
+    } else {
+      std::cerr << __func__ << " - neat_read() - bytes read : " << bytes_read << " - stream : " << opCB->stream_id <<  std::endl;
+    }
+
   }
 
   if (handler->get_config()->hexdump) {
@@ -655,7 +665,7 @@ int Http2Handler::fill_wb() {
     data_pendinglen_ = 0;
   }
 
-  for (;;) {
+  //for (;;) {
     const uint8_t *data;
     auto datalen = nghttp2_session_mem_send(session_, &data);
 
@@ -665,15 +675,16 @@ int Http2Handler::fill_wb() {
       return -1;
     }
     if (datalen == 0) {
-      break;
+      //break;
+      return 0;
     }
     auto n = wb_.write(data, datalen);
     if (n < static_cast<decltype(n)>(datalen)) {
       data_pending_ = data + n;
       data_pendinglen_ = datalen - n;
-      break;
+      //break;
     }
-  }
+  //}
   return 0;
 }
 
@@ -1657,6 +1668,9 @@ HttpServer::HttpServer(const Config *config) : config_(config) {
 
 int HttpServer::run() {
 
+  NEAT_OPTARGS_DECLARE(NEAT_OPTARGS_MAX);
+  NEAT_OPTARGS_INIT();
+  NEAT_OPTARG_INT(NEAT_TAG_STREAM_COUNT, 2048);
 
   if ((this->ctx = neat_init_ctx()) == NULL) {
     std::cerr << "[ERROR] neat_init_ctx() failed" << std::endl;
