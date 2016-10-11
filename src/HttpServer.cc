@@ -78,6 +78,7 @@ constexpr auto NGHTTPD_SERVER =
 
 namespace {
 void delete_handler(Http2Handler *handler) {
+  std::cerr << __func__ << std::endl;
   handler->remove_self();
   delete handler;
 }
