@@ -69,7 +69,7 @@
 static const char *config_property = "{\
     \"transport\": [\
         {\
-            \"value\": \"TCP\",\
+            \"value\": \"SCTP\",\
             \"precedence\": 1\
         }\
     ]\
@@ -499,7 +499,7 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   uint32_t bytes_read = 0;
   neat_error_code code;
 
-  std::cerr << ">>>>>> " << __func__ << std::endl;
+  std::cerr << __func__ << std::endl;
 
   if (uv_is_active((uv_handle_t *) &client->rt)) {
     uv_timer_again(&client->rt);
@@ -507,33 +507,31 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
     uv_timer_start(&client->rt, on_timeout, 0, config.timeout);
   }
 
-  //for (;;) {
-    //while ((nread = read(fd, buf.data(), buf.size())) == -1 && errno == EINTR);
-    code = neat_read(client->ctx, client->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
 
-    if (code == NEAT_ERROR_WOULD_BLOCK) {
-        return 0;
-    } else if (code != NEAT_OK) {
-      client->disconnect();
-      return -1;
-    }
+  code = neat_read(client->ctx, client->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
 
-    if (bytes_read == 0) {
-      client->disconnect();
-      return -1;
-    }
+  if (code == NEAT_ERROR_WOULD_BLOCK) {
+      return 0;
+  } else if (code != NEAT_OK) {
+    client->disconnect();
+    return -1;
+  }
 
-    auto rv = nghttp2_session_mem_recv(client->session, buf.data(), bytes_read);
-    if (rv < 0) {
-      std::cerr << __func__ << " - [ERROR] nghttp2_session_mem_recv() returned error: " << nghttp2_strerror(rv) << std::endl;
-      client->disconnect();
-      return -1;
-    }
+  if (bytes_read == 0) {
+    client->disconnect();
+    return -1;
+  }
 
-    assert(static_cast<size_t>(rv) == bytes_read);
+  auto rv = nghttp2_session_mem_recv(client->session, buf.data(), bytes_read);
+  if (rv < 0) {
+    std::cerr << __func__ << " - [ERROR] nghttp2_session_mem_recv() returned error: " << nghttp2_strerror(rv) << std::endl;
+    client->disconnect();
+    return -1;
+  }
 
-    client->signal_write();
-  //}
+  assert(static_cast<size_t>(rv) == bytes_read);
+
+  client->signal_write();
 
   return NEAT_ERROR_OK;
 }
@@ -551,50 +549,49 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
     uv_timer_start(&client->rt, on_timeout, 0, config.timeout);
   }
 
-  for (;;) {
-    if (client->wbuf_len == 0) {
-      client->wbuf_len = nghttp2_session_mem_send(client->session, &client->wbuf);
-      if (client->wbuf_len < 0) {
-        std::cerr << __func__ << " - [ERROR] nghttp2_session_send() returned error: " << nghttp2_strerror(client->wbuf_len) << std::endl;
-        client->disconnect();
-        return -1;
-      }
-
-      if (client->wbuf_len == 0) {
-        if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
-          std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
-          client->disconnect();
-          return -1;
-        }
-        break;
-      }
-    }
-    std::cerr << __func__ << " - neat_write();" << std::endl;
-    code = neat_write(client->ctx, client->flow, client->wbuf, client->wbuf_len, NULL, 0);
-    if (code == NEAT_ERROR_WOULD_BLOCK) {
-      if (uv_is_active((uv_handle_t *) &client->wt)) {
-        uv_timer_again(&client->wt);
-      } else if (config.timeout){
-        uv_timer_start(&client->wt, on_timeout, 0, config.timeout);
-      }
-      return 0;
-    } else if (code != NEAT_OK) {
-      std::cerr << __func__ << " - neat_write() == -1 - disconnect!" << std::endl;
+  if (client->wbuf_len == 0) {
+    client->wbuf_len = nghttp2_session_mem_send(client->session, &client->wbuf);
+    if (client->wbuf_len < 0) {
+      std::cerr << __func__ << " - [ERROR] nghttp2_session_send() returned error: " << nghttp2_strerror(client->wbuf_len) << std::endl;
       client->disconnect();
       return -1;
     }
 
-    client->wbuf_len = 0;
+    if (client->wbuf_len == 0) {
+      if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
+        std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
+        client->disconnect();
+        return -1;
+      }
+      std::cerr << __func__ << " - nothing more to send - stopping write callback" << std::endl;
+      opCB->on_writable = NULL;
+      neat_set_operations(opCB->ctx, opCB->flow, opCB);
+      return NEAT_ERROR_OK;
+      //break;
+    }
+  }
+  std::cerr << __func__ << " - neat_write();" << std::endl;
+  code = neat_write(client->ctx, client->flow, client->wbuf, client->wbuf_len, NULL, 0);
+  if (code == NEAT_ERROR_WOULD_BLOCK) {
+    if (uv_is_active((uv_handle_t *) &client->wt)) {
+      uv_timer_again(&client->wt);
+    } else if (config.timeout){
+      uv_timer_start(&client->wt, on_timeout, 0, config.timeout);
+    }
+    return 0;
+  } else if (code != NEAT_OK) {
+    std::cerr << __func__ << " - neat_write() == -1 - disconnect!" << std::endl;
+    client->disconnect();
+    return -1;
   }
 
-  opCB->on_writable = NULL;
-  neat_set_operations(opCB->ctx, opCB->flow, opCB);
-  uv_timer_stop(&client->wt);
+  client->wbuf_len = 0;
+
+  //uv_timer_stop(&client->wt);
 
   return NEAT_ERROR_OK;
 }
 } // namespace
-
 
 
 HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks)
@@ -748,6 +745,7 @@ int HttpClient::connected() {
 
   ops.on_readable = on_readable;
   ops.on_writable = on_writable;
+  ops.on_connected = NULL;
   neat_set_operations(ctx, flow, &ops);
 
   if (uv_is_active((uv_handle_t *) &rt)) {
