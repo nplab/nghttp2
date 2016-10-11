@@ -84,7 +84,6 @@ struct Config {
   bool remote_name;
   bool get_assets;
   bool stat;
-  bool upgrade;
   bool continuation;
   bool no_content_length;
   bool no_dep;
@@ -205,7 +204,6 @@ struct HttpClient {
   HttpClient(const nghttp2_session_callbacks *callbacks);
   ~HttpClient();
 
-  bool need_upgrade() const;
   int resolve_host(const std::string &host, uint16_t port);
   int initiate_connection(const std::string &host, uint16_t port);
   void disconnect();
@@ -215,11 +213,6 @@ struct HttpClient {
   int connected();
 
   int do_write();
-
-  int on_upgrade_connect();
-  int on_upgrade_read(const uint8_t *data, size_t len);
-  int on_read(const uint8_t *data, size_t len);
-  int on_write();
 
   int connection_made();
   void connect_fail();
@@ -250,7 +243,6 @@ struct HttpClient {
   std::string scheme;
   std::string host;
   std::string hostport;
-  // Used for parse the HTTP upgrade response from server
   std::unique_ptr<http_parser> htp;
   SessionTiming timing;
   /*
@@ -268,9 +260,6 @@ struct HttpClient {
   neat_flow *flow;
   neat_flow_operations ops;
 
-  std::function<int(HttpClient &)> readfn, writefn;
-  std::function<int(HttpClient &, const uint8_t *, size_t)> on_readfn;
-  std::function<int(HttpClient &)> on_writefn;
   nghttp2_session *session;
   const nghttp2_session_callbacks *callbacks;
   addrinfo *addrs;
@@ -284,11 +273,6 @@ struct HttpClient {
   // The length of settings_payload
   size_t settings_payloadlen;
   ClientState state;
-  // The HTTP status code of the response message of HTTP Upgrade.
-  unsigned int upgrade_response_status_code;
-  // true if the response message of HTTP Upgrade request is fully
-  // received. It is not relevant the upgrade succeeds, or not.
-  bool upgrade_response_complete;
   // SETTINGS payload sent as token68 in HTTP Upgrade
   std::array<uint8_t, 128> settings_payload;
 

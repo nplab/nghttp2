@@ -69,11 +69,21 @@
 static const char *config_property = "{\
     \"transport\": [\
         {\
-            \"value\": \"SCTP\",\
+            \"value\": \"TCP\",\
             \"precedence\": 1\
         }\
     ]\
 }";\
+
+/*
+
+{\
+    \"value\": \"SCTP\",\
+    \"precedence\": 1\
+},\
+
+
+*/
 
 namespace nghttp2 {
 
@@ -118,7 +128,6 @@ Config::Config()
       remote_name(false),
       get_assets(false),
       stat(false),
-      upgrade(false),
       continuation(false),
       no_content_length(false),
       no_dep(false),
@@ -352,45 +361,6 @@ void ContinueTimer::dispatch_continue() {
 }
 
 namespace {
-int htp_msg_begincb(http_parser *htp) {
-  if (config.verbose) {
-    print_timer();
-    std::cout << " HTTP Upgrade response" << std::endl;
-  }
-  return 0;
-}
-} // namespace
-
-namespace {
-int htp_statuscb(http_parser *htp, const char *at, size_t length) {
-  auto client = static_cast<HttpClient *>(htp->data);
-  client->upgrade_response_status_code = htp->status_code;
-  return 0;
-}
-} // namespace
-
-namespace {
-int htp_msg_completecb(http_parser *htp) {
-  auto client = static_cast<HttpClient *>(htp->data);
-  client->upgrade_response_complete = true;
-  return 0;
-}
-} // namespace
-
-namespace {
-http_parser_settings htp_hooks = {
-    htp_msg_begincb,   // http_cb      on_message_begin;
-    nullptr,           // http_data_cb on_url;
-    htp_statuscb,      // http_data_cb on_status;
-    nullptr,           // http_data_cb on_header_field;
-    nullptr,           // http_data_cb on_header_value;
-    nullptr,           // http_cb      on_headers_complete;
-    nullptr,           // http_data_cb on_body;
-    htp_msg_completecb // http_cb      on_message_complete;
-};
-} // namespace
-
-namespace {
 int submit_request(HttpClient *client, const Headers &headers, Request *req) {
   auto path = req->make_reqpath();
   auto scheme = util::get_uri_field(req->uri.c_str(), req->u, UF_SCHEMA);
@@ -537,7 +507,7 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
     uv_timer_start(&client->rt, on_timeout, 0, config.timeout);
   }
 
-  for (;;) {
+  //for (;;) {
     //while ((nread = read(fd, buf.data(), buf.size())) == -1 && errno == EINTR);
     code = neat_read(client->ctx, client->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
 
@@ -553,10 +523,17 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
       return -1;
     }
 
-    if (client->on_readfn(*client, buf.data(), bytes_read) != 0) {
+    auto rv = nghttp2_session_mem_recv(client->session, buf.data(), bytes_read);
+    if (rv < 0) {
+      std::cerr << __func__ << " - [ERROR] nghttp2_session_mem_recv() returned error: " << nghttp2_strerror(rv) << std::endl;
       client->disconnect();
+      return -1;
     }
-  }
+
+    assert(static_cast<size_t>(rv) == bytes_read);
+
+    client->signal_write();
+  //}
 
   return NEAT_ERROR_OK;
 }
@@ -566,10 +543,8 @@ namespace {
 neat_error_code on_writable(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
   neat_error_code code;
-  std::array<struct iovec, 1> iov;
-
-  std::cerr << ">>>>>> " << __func__ << std::endl;
-
+  const uint8_t *data;
+  std::cerr << __func__ << std::endl;
 
   if (uv_is_active((uv_handle_t *) &client->rt)) {
     uv_timer_again(&client->rt);
@@ -578,22 +553,23 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   }
 
   for (;;) {
-    std::cout << " >>>>>>>> write_clear - before" << std::endl;
-    if (client->on_writefn(*client) != 0) {
-      opCB->on_writable = NULL;
-      neat_set_operations(opCB->ctx, opCB->flow, opCB);
+    auto len = nghttp2_session_mem_send(client->session, &data);
+    if (len < 0) {
+      std::cerr << __func__ << " - [ERROR] nghttp2_session_send() returned error: " << nghttp2_strerror(len) << std::endl;
       client->disconnect();
-      std::cout << " >>>>>>>> on_writefn != 0 - return -1" << std::endl;
       return -1;
     }
-    std::cout << " >>>>>>>> write_clear - after" << std::endl;
-    auto iovcnt = client->wb.riovec(iov.data(), iov.size());
 
-    if (iovcnt == 0) {
+    if (len == 0) {
+      if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
+        std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
+        client->disconnect();
+        return -1;
+      }
       break;
     }
-
-    code = neat_write(client->ctx, client->flow, (const unsigned char *) iov[0].iov_base, iov[0].iov_len, NULL, 0);
+    std::cerr << __func__ << " - neat_write();" << std::endl;
+    code = neat_write(client->ctx, client->flow, data, len, NULL, 0);
     if (code == NEAT_ERROR_WOULD_BLOCK) {
       if (uv_is_active((uv_handle_t *) &client->wt)) {
         uv_timer_again(&client->wt);
@@ -606,8 +582,6 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
       client->disconnect();
       return -1;
     }
-
-    client->wb.drain(iov[0].iov_len);
   }
 
   opCB->on_writable = NULL;
@@ -631,14 +605,9 @@ HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks)
       complete(0),
       success(0),
       settings_payloadlen(0),
-      state(ClientState::IDLE),
-      upgrade_response_status_code(0),
-      upgrade_response_complete(false) {
-  
+      state(ClientState::IDLE)
+      {
 
-  NEAT_OPTARGS_DECLARE(NEAT_OPTARGS_MAX);
-  NEAT_OPTARGS_INIT();
-  NEAT_OPTARG_INT(NEAT_TAG_STREAM_COUNT, 2048);
 
   if ((this->ctx = neat_init_ctx()) == NULL) {
     std::cerr << "[ERROR] neat_init_ctx() failed" << std::endl;
@@ -669,14 +638,11 @@ HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks)
 HttpClient::~HttpClient() {
   disconnect();
 
-  neat_stop_event_loop(ctx);
-
   if (this->flow != NULL) {
     neat_free_flow(this->flow);
   }
 
   if (this->ctx != NULL) {
-    std::cerr << ">>>>>>>>> FREEEEEEE CTX" << std::endl;
     neat_free_ctx(this->ctx);
   }
 
@@ -685,10 +651,6 @@ HttpClient::~HttpClient() {
     addrs = nullptr;
     next_addr = nullptr;
   }
-}
-
-bool HttpClient::need_upgrade() const {
-  return config.upgrade && scheme == "http";
 }
 
 int HttpClient::resolve_host(const std::string &host, uint16_t port) {
@@ -720,41 +682,23 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
 
   std::cerr << ">>>>> FELIX : neat open ctx: " << ctx << " - host: " << host.c_str() << std::endl;
 
-  if (neat_open(ctx, flow, host.c_str(), port, NULL, 0) != NEAT_OK) {
+  NEAT_OPTARGS_DECLARE(NEAT_OPTARGS_MAX);
+  NEAT_OPTARGS_INIT();
+  NEAT_OPTARG_INT(NEAT_TAG_STREAM_COUNT, 2048);
+
+  if (neat_open(ctx, flow, host.c_str(), port, NEAT_OPTARGS, NEAT_OPTARGS_COUNT) != NEAT_OK) {
     std::cerr << "[ERROR] neat_open() failed - ctx: " << ctx << " - host: " << host << " - port: " << port << std::endl;
   }
 
-
-
   uv_timer_set_repeat(&wt, 10000);
   uv_timer_again(&wt);
-
-
-  writefn = &HttpClient::connected;
-  if (need_upgrade()) {
-    on_readfn = &HttpClient::on_upgrade_read;
-    on_writefn = &HttpClient::on_upgrade_connect;
-  } else {
-    on_readfn = &HttpClient::on_read;
-    on_writefn = &HttpClient::on_write;
-  }
-
-  /*
-
-  ev_io_set(&rev, fd, EV_READ);
-  ev_io_set(&wev, fd, EV_WRITE);
-
-  ev_io_start(loop, &wev);
-
-  ev_timer_again(loop, &wt);
-
-  */
 
   return 0;
 }
 
 void HttpClient::disconnect() {
-  std::cerr << ">>>>>> FELIX : " << __func__  << " - ctx:" << ctx << std::endl;
+  std::cerr << __func__ << std::endl;
+
   state = ClientState::IDLE;
 
   for (auto req = std::begin(reqvec); req != std::end(reqvec); ++req) {
@@ -762,16 +706,6 @@ void HttpClient::disconnect() {
       (*req)->continue_timer->stop();
     }
   }
-
-  /*
-  ev_timer_stop(loop, &settings_timer);
-
-  ev_timer_stop(loop, &rt);
-  ev_timer_stop(loop, &wt);
-
-  ev_io_stop(loop, &rev);
-  ev_io_stop(loop, &wev);
-  */
 
   ops.on_readable = NULL;
   ops.on_writable = NULL;
@@ -781,8 +715,8 @@ void HttpClient::disconnect() {
   uv_timer_stop(&rt);
   uv_timer_stop(&wt);
 
-
-  //neat_stop_event_loop(ctx);
+  neat_shutdown(ctx, flow);
+  neat_stop_event_loop(ctx);
 
   nghttp2_session_del(session);
   session = nullptr;
@@ -800,21 +734,10 @@ void HttpClient::connect_fail() {
   disconnect();
   if (cur_state == ClientState::IDLE) {
     std::cerr << ">>>>> FELIX _ FIX ME _ connect_fail" << std::endl;
-
-    /*
-    if (initiate_connection() == 0) {
-      std::cerr << "Trying next address "
-                << util::numeric_name(cur_addr->ai_addr, cur_addr->ai_addrlen)
-                << std::endl;
-    }*/
   }
 }
 
 int HttpClient::connected() {
-  /*if (!util::check_socket_connected(fd)) {
-    return ERR_CONNECT_FAIL;
-  }*/
-
   if (config.verbose) {
     print_timer();
     std::cout << " Connected" << std::endl;
@@ -832,12 +755,6 @@ int HttpClient::connected() {
     uv_timer_start(&rt, on_timeout, 0, config.timeout);
   }
   uv_timer_stop(&wt);
-
-  if (need_upgrade()) {
-    htp = make_unique<http_parser>();
-    http_parser_init(htp.get(), HTTP_RESPONSE);
-    htp->data = this;
-  }
 
   if (connection_made() != 0) {
     return -1;
@@ -882,161 +799,12 @@ size_t populate_settings(nghttp2_settings_entry *iv) {
 }
 } // namespace
 
-int HttpClient::on_upgrade_connect() {
-  ssize_t rv;
-  record_connect_end_time();
-  assert(!reqvec.empty());
-  std::array<nghttp2_settings_entry, 16> iv;
-  size_t niv = populate_settings(iv.data());
-  assert(settings_payload.size() >= 8 * niv);
-  rv = nghttp2_pack_settings_payload(settings_payload.data(),
-                                     settings_payload.size(), iv.data(), niv);
-  if (rv < 0) {
-    return -1;
-  }
-  settings_payloadlen = rv;
-  auto token68 =
-      base64::encode(std::begin(settings_payload),
-                     std::begin(settings_payload) + settings_payloadlen);
-  util::to_token68(token68);
-
-  std::string req;
-  if (reqvec[0]->data_prd) {
-    // If the request contains upload data, use OPTIONS * to upgrade
-    req = "OPTIONS *";
-  } else {
-    auto meth = std::find_if(
-        std::begin(config.headers), std::end(config.headers),
-        [](const Header &kv) { return util::streq_l(":method", kv.name); });
-
-    if (meth == std::end(config.headers)) {
-      req = "GET ";
-      reqvec[0]->method = "GET";
-    } else {
-      req = (*meth).value;
-      req += ' ';
-      reqvec[0]->method = (*meth).value;
-    }
-    req += reqvec[0]->make_reqpath();
-  }
-
-  auto headers = Headers{{"host", hostport},
-                         {"connection", "Upgrade, HTTP2-Settings"},
-                         {"upgrade", NGHTTP2_CLEARTEXT_PROTO_VERSION_ID},
-                         {"http2-settings", token68},
-                         {"accept", "*/*"},
-                         {"user-agent", "nghttp2/" NGHTTP2_VERSION}};
-  auto initial_headerslen = headers.size();
-
-  for (auto &kv : config.headers) {
-    size_t i;
-    if (kv.name.empty() || kv.name[0] == ':') {
-      continue;
-    }
-    for (i = 0; i < initial_headerslen; ++i) {
-      if (kv.name == headers[i].name) {
-        headers[i].value = kv.value;
-        break;
-      }
-    }
-    if (i < initial_headerslen) {
-      continue;
-    }
-    headers.emplace_back(kv.name, kv.value, kv.no_index);
-  }
-
-  req += " HTTP/1.1\r\n";
-
-  for (auto &kv : headers) {
-    req += kv.name;
-    req += ": ";
-    req += kv.value;
-    req += "\r\n";
-  }
-  req += "\r\n";
-
-  wb.append(req);
-
-  if (config.verbose) {
-    print_timer();
-    std::cout << " HTTP Upgrade request\n" << req << std::endl;
-  }
-
-  if (!reqvec[0]->data_prd) {
-    // record request time if this is a part of real request.
-    reqvec[0]->record_request_start_time();
-    reqvec[0]->req_nva = std::move(headers);
-  }
-
-  on_writefn = &HttpClient::noop;
-
-  signal_write();
-
-  return 0;
-}
-
-int HttpClient::on_upgrade_read(const uint8_t *data, size_t len) {
-  int rv;
-
-  auto nread = http_parser_execute(htp.get(), &htp_hooks,
-                                   reinterpret_cast<const char *>(data), len);
-
-  if (config.verbose) {
-    std::cout.write(reinterpret_cast<const char *>(data), nread);
-  }
-
-  auto htperr = HTTP_PARSER_ERRNO(htp.get());
-
-  if (htperr != HPE_OK) {
-    std::cerr << "[ERROR] Failed to parse HTTP Upgrade response header: "
-              << "(" << http_errno_name(htperr) << ") "
-              << http_errno_description(htperr) << std::endl;
-    return -1;
-  }
-
-  if (!upgrade_response_complete) {
-    return 0;
-  }
-
-  if (config.verbose) {
-    std::cout << std::endl;
-  }
-
-  if (upgrade_response_status_code != 101) {
-    std::cerr << "[ERROR] HTTP Upgrade failed" << std::endl;
-
-    return -1;
-  }
-
-  if (config.verbose) {
-    print_timer();
-    std::cout << " HTTP Upgrade success" << std::endl;
-  }
-
-  on_readfn = &HttpClient::on_read;
-  on_writefn = &HttpClient::on_write;
-
-  rv = connection_made();
-  if (rv != 0) {
-    return rv;
-  }
-
-  // Read remaining data in the buffer because it is not notified
-  // callback anymore.
-  rv = on_readfn(*this, data + nread, len - nread);
-  if (rv != 0) {
-    return rv;
-  }
-
-  return 0;
-}
-
 int HttpClient::connection_made() {
   int rv;
 
-  if (!need_upgrade()) {
-    record_connect_end_time();
-  }
+
+  record_connect_end_time();
+
 
   rv = nghttp2_session_client_new2(&session, callbacks, this,
                                    config.http2_option);
@@ -1044,40 +812,15 @@ int HttpClient::connection_made() {
   if (rv != 0) {
     return -1;
   }
-  if (need_upgrade()) {
-    // Adjust stream user-data depending on the existence of upload
-    // data
-    Request *stream_user_data = nullptr;
-    if (!reqvec[0]->data_prd) {
-      stream_user_data = reqvec[0].get();
-    }
-    // If HEAD is used, that is only when user specified it with -H
-    // option.
-    auto head_request = stream_user_data && stream_user_data->method == "HEAD";
-    rv = nghttp2_session_upgrade2(session, settings_payload.data(),
-                                  settings_payloadlen, head_request,
-                                  stream_user_data);
-    if (rv != 0) {
-      std::cerr << "[ERROR] nghttp2_session_upgrade() returned error: "
-                << nghttp2_strerror(rv) << std::endl;
-      return -1;
-    }
-    if (stream_user_data) {
-      stream_user_data->stream_id = 1;
-      request_done(stream_user_data);
-    }
+
+
+  std::array<nghttp2_settings_entry, 16> iv;
+  auto niv = populate_settings(iv.data());
+  rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, iv.data(), niv);
+  if (rv != 0) {
+    return -1;
   }
-  // If upgrade succeeds, the SETTINGS value sent with
-  // HTTP2-Settings header field has already been submitted to
-  // session object.
-  if (!need_upgrade()) {
-    std::array<nghttp2_settings_entry, 16> iv;
-    auto niv = populate_settings(iv.data());
-    rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, iv.data(), niv);
-    if (rv != 0) {
-      return -1;
-    }
-  }
+
   if (!config.no_dep) {
     // Create anchor stream nodes
     nghttp2_priority_spec pri_spec;
@@ -1094,31 +837,6 @@ int HttpClient::connection_made() {
 
     rv = nghttp2_session_set_next_stream_id(
         session, anchors[ANCHOR_FOLLOWERS].stream_id + 2);
-    if (rv != 0) {
-      return -1;
-    }
-
-    if (need_upgrade() && !reqvec[0]->data_prd) {
-      // Amend the priority because we cannot send priority in
-      // HTTP/1.1 Upgrade.
-      auto &anchor = anchors[ANCHOR_FOLLOWERS];
-      nghttp2_priority_spec_init(&pri_spec, anchor.stream_id,
-                                 reqvec[0]->pri_spec.weight, 0);
-
-      rv = nghttp2_submit_priority(session, NGHTTP2_FLAG_NONE, 1, &pri_spec);
-      if (rv != 0) {
-        return -1;
-      }
-    }
-  } else if (need_upgrade() && !reqvec[0]->data_prd &&
-             reqvec[0]->pri_spec.weight != NGHTTP2_DEFAULT_WEIGHT) {
-    // Amend the priority because we cannot send priority in HTTP/1.1
-    // Upgrade.
-    nghttp2_priority_spec pri_spec;
-
-    nghttp2_priority_spec_init(&pri_spec, 0, reqvec[0]->pri_spec.weight, 0);
-
-    rv = nghttp2_submit_priority(session, NGHTTP2_FLAG_NONE, 1, &pri_spec);
     if (rv != 0) {
       return -1;
     }
@@ -1142,7 +860,7 @@ int HttpClient::connection_made() {
   }
   // Adjust first request depending on the existence of the upload
   // data
-  for (auto i = std::begin(reqvec) + (need_upgrade() && !reqvec[0]->data_prd);
+  for (auto i = std::begin(reqvec);
        i != std::end(reqvec); ++i) {
     if (submit_request(this, config.headers, (*i).get()) != 0) {
       return -1;
@@ -1154,61 +872,7 @@ int HttpClient::connection_made() {
   return 0;
 }
 
-int HttpClient::on_read(const uint8_t *data, size_t len) {
-  if (config.hexdump) {
-    util::hexdump(stdout, data, len);
-  }
-
-  auto rv = nghttp2_session_mem_recv(session, data, len);
-  if (rv < 0) {
-    std::cerr << "[ERROR] nghttp2_session_mem_recv() returned error: "
-              << nghttp2_strerror(rv) << std::endl;
-    return -1;
-  }
-
-  assert(static_cast<size_t>(rv) == len);
-
-  if (nghttp2_session_want_read(session) == 0 &&
-      nghttp2_session_want_write(session) == 0 && wb.rleft() == 0) {
-    return -1;
-  }
-
-  signal_write();
-
-  return 0;
-}
-
-int HttpClient::on_write() {
-  for (;;) {
-    if (wb.rleft() >= 16384) {
-      return 0;
-    }
-
-    const uint8_t *data;
-    auto len = nghttp2_session_mem_send(session, &data);
-    if (len < 0) {
-      std::cerr << "[ERROR] nghttp2_session_send() returned error: "
-                << nghttp2_strerror(len) << std::endl;
-      return -1;
-    }
-
-    if (len == 0) {
-      break;
-    }
-
-    wb.append(data, len);
-  }
-
-  if (nghttp2_session_want_read(session) == 0 &&
-      nghttp2_session_want_write(session) == 0 && wb.rleft() == 0) {
-    return -1;
-  }
-
-  return 0;
-}
-
 void HttpClient::signal_write() {
-  //ev_io_start(loop, &wev);
   ops.on_writable = on_writable;
   neat_set_operations(ctx, flow, &ops);
 }
@@ -2383,10 +2047,6 @@ Options:
   -m, --multiply=<N>
               Request each URI <N> times.  By default, same URI is not
               requested twice.  This option disables it too.
-  -u, --upgrade
-              Perform HTTP Upgrade for HTTP/2.  This option is ignored
-              if the request URI has https scheme.  If -d is used, the
-              HTTP upgrade request is performed with OPTIONS method.
   -p, --weight=<WEIGHT>
               Sets  weight of  given  URI.  This  option  can be  used
               multiple times, and  N-th -p option sets  weight of N-th
@@ -2464,7 +2124,6 @@ int main(int argc, char **argv) {
         {"header", required_argument, nullptr, 'H'},
         {"data", required_argument, nullptr, 'd'},
         {"multiply", required_argument, nullptr, 'm'},
-        {"upgrade", no_argument, nullptr, 'u'},
         {"weight", required_argument, nullptr, 'p'},
         {"peer-max-concurrent-streams", required_argument, nullptr, 'M'},
         {"header-table-size", required_argument, nullptr, 'c'},
@@ -2536,9 +2195,6 @@ int main(int argc, char **argv) {
         std::cerr << "-t: bad timeout value: " << optarg << std::endl;
         exit(EXIT_FAILURE);
       }
-      break;
-    case 'u':
-      config.upgrade = true;
       break;
     case 'w':
     case 'W': {
