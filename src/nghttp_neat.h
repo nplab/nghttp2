@@ -276,6 +276,9 @@ struct HttpClient {
   // SETTINGS payload sent as token68 in HTTP Upgrade
   std::array<uint8_t, 128> settings_payload;
 
+  const uint8_t *wbuf;
+  ssize_t wbuf_len;
+
   enum { ERR_CONNECT_FAIL = -100 };
 };
 
