@@ -538,6 +538,22 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
 } // namespace
 
 namespace {
+neat_error_code on_all_written(struct neat_flow_operations *opCB) {
+  auto client = static_cast<HttpClient *>(opCB->userData);
+  std::cerr << __func__ << std::endl;
+
+  if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
+    std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
+    client->disconnect();
+    return -1;
+  }
+
+  return NEAT_ERROR_OK;
+
+}
+}
+
+namespace {
 neat_error_code on_writable(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
   neat_error_code code;
@@ -558,13 +574,9 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
     }
 
     if (client->wbuf_len == 0) {
-      if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
-        std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
-        client->disconnect();
-        return -1;
-      }
       std::cerr << __func__ << " - nothing more to send - stopping write callback" << std::endl;
       opCB->on_writable = NULL;
+      opCB->on_all_written = on_all_written;
       neat_set_operations(opCB->ctx, opCB->flow, opCB);
       return NEAT_ERROR_OK;
       //break;

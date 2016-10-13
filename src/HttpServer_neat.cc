@@ -100,8 +100,8 @@ void print_session_id(int64_t id) { std::cout << "[id=" << id << "] "; }
 
 Config::Config()
     : mime_types_file("/etc/mime.types"),
-      stream_read_timeout(1_min),
-      stream_write_timeout(1_min),
+      stream_read_timeout(60000),
+      stream_write_timeout(60000),
       data_ptr(nullptr),
       padding(0),
       num_worker(1),
@@ -477,10 +477,26 @@ void settings_timeout_cb(uv_timer_t *w) {
 } // namespace
 
 namespace {
-neat_error_code on_writable(struct neat_flow_operations *opCB) {
-  neat_error_code code;
+neat_error_code on_all_written(struct neat_flow_operations *opCB) {
   auto handler = static_cast<Http2Handler *>(opCB->userData);
   Http2Handler::WriteBuf *wb = handler->get_wb();
+
+  if (nghttp2_session_want_read(handler->get_session()) == 0 && nghttp2_session_want_write(handler->get_session()) == 0 && wb->rleft() == 0) {
+    delete_handler(handler);
+    return -1;
+  }
+
+  return NEAT_ERROR_OK;
+
+}
+}
+
+namespace {
+neat_error_code on_writable(struct neat_flow_operations *opCB) {
+  auto handler = static_cast<Http2Handler *>(opCB->userData);
+  Http2Handler::WriteBuf *wb = handler->get_wb();
+  neat_error_code code;
+
 
   if (handler->get_config()->verbose) {
     std::cerr << __func__ << std::endl;
@@ -515,13 +531,10 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   if (wb->rleft() == 0) {
     std::cerr << __func__ << " - neat_write() - rfleft == 0 - stopping write CB" << std::endl;
     opCB->on_writable = NULL;
-    neat_set_operations(opCB->ctx, opCB->flow, opCB);
   }
 
-  if (nghttp2_session_want_read(handler->get_session()) == 0 && nghttp2_session_want_write(handler->get_session()) == 0 && wb->rleft() == 0) {
-    delete_handler(handler);
-    return -1;
-  }
+  opCB->on_all_written = on_all_written;
+  neat_set_operations(opCB->ctx, opCB->flow, opCB);
 
   return 0;
 }
