@@ -150,7 +150,7 @@ void add_stream_read_timeout(Stream *stream) {
   if (uv_is_active((uv_handle_t *) &stream->rtimer)) {
     uv_timer_again(&stream->rtimer);
   } else if (config->stream_read_timeout) {
-    uv_timer_start(&stream->rtimer, stream_timeout_cb, 0, config->stream_read_timeout);
+    uv_timer_start(&stream->rtimer, stream_timeout_cb, config->stream_read_timeout, config->stream_read_timeout);
   }
 }
 } // namespace
@@ -171,7 +171,7 @@ void add_stream_write_timeout(Stream *stream) {
   if (uv_is_active((uv_handle_t *) &stream->wtimer)) {
     uv_timer_again(&stream->wtimer);
   } else if (config->stream_write_timeout) {
-    uv_timer_start(&stream->wtimer, stream_timeout_cb, 0, config->stream_write_timeout);
+    uv_timer_start(&stream->wtimer, stream_timeout_cb, config->stream_write_timeout, config->stream_read_timeout);
   }
 }
 } // namespace
