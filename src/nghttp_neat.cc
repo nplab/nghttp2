@@ -499,7 +499,7 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   uint32_t bytes_read = 0;
   neat_error_code code;
 
-  std::cerr << __func__ << std::endl;
+  //std::cerr << __func__ << std::endl;
 
   if (uv_is_active((uv_handle_t *) &client->rt)) {
     uv_timer_again(&client->rt);
@@ -540,7 +540,7 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
 namespace {
 neat_error_code on_all_written(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
-  std::cerr << __func__ << std::endl;
+  //std::cerr << __func__ << std::endl;
 
   if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
     std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
@@ -557,7 +557,7 @@ namespace {
 neat_error_code on_writable(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
   neat_error_code code;
-  std::cerr << __func__ << std::endl;
+  //std::cerr << __func__ << std::endl;
 
   if (uv_is_active((uv_handle_t *) &client->rt)) {
     uv_timer_again(&client->rt);
@@ -582,7 +582,7 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
       //break;
     }
   }
-  std::cerr << __func__ << " - neat_write();" << std::endl;
+  //std::cerr << __func__ << " - neat_write();" << std::endl;
   code = neat_write(client->ctx, client->flow, client->wbuf, client->wbuf_len, NULL, 0);
   if (code == NEAT_ERROR_WOULD_BLOCK) {
     if (uv_is_active((uv_handle_t *) &client->wt)) {
@@ -707,7 +707,7 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
 }
 
 void HttpClient::disconnect() {
-  std::cerr << __func__ << std::endl;
+  //std::cerr << __func__ << std::endl;
 
   state = ClientState::IDLE;
 

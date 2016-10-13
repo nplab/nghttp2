@@ -504,13 +504,19 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
 
   for (;;) {
     if (wb->rleft() > 0) {
-      std::cerr << __func__ << " - sending " << wb->rleft() << " bytes" << std::endl;
+      if (handler->get_config()->verbose) {
+        std::cerr << __func__ << " - sending " << wb->rleft() << " bytes" << std::endl;
+      }
       code = neat_write(opCB->ctx, opCB->flow, wb->pos, wb->rleft(), NULL, 0);
       if (code == NEAT_ERROR_WOULD_BLOCK) {
-        std::cerr << __func__ << " - neat_write() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
+        if (handler->get_config()->verbose) {
+          std::cerr << __func__ << " - neat_write() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
+        }
         return 0;
       } else if (code != NEAT_OK) {
-        std::cerr << __func__ << " - neat_write() - NEAT_ERROR - closing connection" << std::endl;
+        if (handler->get_config()->verbose) {
+          std::cerr << __func__ << " - neat_write() - NEAT_ERROR - closing connection" << std::endl;
+        }
         delete_handler(handler);
         return -1;
       }
@@ -529,7 +535,9 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
 
   // nothing left to write, stopping read CB
   if (wb->rleft() == 0) {
-    std::cerr << __func__ << " - neat_write() - rfleft == 0 - stopping write CB" << std::endl;
+    if (handler->get_config()->verbose) {
+      std::cerr << __func__ << " - neat_write() - rfleft == 0 - stopping write CB" << std::endl;
+    }
     opCB->on_writable = NULL;
   }
 
@@ -555,12 +563,17 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   code = neat_read(handler->ctx, handler->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
   if (code != NEAT_OK) {
     if (code == NEAT_ERROR_WOULD_BLOCK) {
-      std::cerr << __func__ << " - neat_read() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
+      if (handler->get_config()->verbose) {
+        std::cerr << __func__ << " - neat_read() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
+      }
       return code;
     }
+
+    if (handler->get_config()->verbose) {
       std::cerr << __func__ << " - neat_read() - NEAT_ERROR - closing connection" << std::endl;
-      delete_handler(handler);
-      return NEAT_ERROR_IO;
+    }
+    delete_handler(handler);
+    return NEAT_ERROR_IO;
   }
 
   /* nothing read - closing */
@@ -585,7 +598,9 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   rv = nghttp2_session_mem_recv(handler->get_session(), buf.data(), bytes_read);
   if (rv < 0) {
     if (rv != NGHTTP2_ERR_BAD_CLIENT_MAGIC) {
-      std::cerr << __func__ << " - nghttp2_session_mem_recv() returned error: " << nghttp2_strerror(rv) << std::endl;
+      if (handler->get_config()->verbose) {
+        std::cerr << __func__ << " - nghttp2_session_mem_recv() returned error: " << nghttp2_strerror(rv) << std::endl;
+      }
     }
     return NEAT_ERROR_INTERNAL;
   }
