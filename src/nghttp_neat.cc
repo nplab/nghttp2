@@ -574,7 +574,7 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
     }
 
     if (client->wbuf_len == 0) {
-      std::cerr << __func__ << " - nothing more to send - stopping write callback" << std::endl;
+      //std::cerr << __func__ << " - nothing more to send - stopping write callback" << std::endl;
       opCB->on_writable = NULL;
       opCB->on_all_written = on_all_written;
       neat_set_operations(opCB->ctx, opCB->flow, opCB);
