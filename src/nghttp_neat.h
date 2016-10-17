@@ -278,6 +278,7 @@ struct HttpClient {
 
   const uint8_t *wbuf;
   ssize_t wbuf_len;
+  bool magic_sent;
 
   enum { ERR_CONNECT_FAIL = -100 };
 };

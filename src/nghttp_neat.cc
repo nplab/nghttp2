@@ -484,8 +484,8 @@ void on_timeout_settings(uv_timer_t *timer) {
 } // namespace
 
 namespace {
-neat_error_code on_connect(struct neat_flow_operations *opCB) {
-  std::cerr << ">>>>>> on_connect" << std::endl;
+neat_error_code on_connected(struct neat_flow_operations *opCB) {
+  std::cerr << __func__ << std::endl;
   auto client = static_cast<HttpClient *>(opCB->userData);
   client->connected();
   return NEAT_ERROR_OK;
@@ -557,6 +557,10 @@ namespace {
 neat_error_code on_writable(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
   neat_error_code code;
+  nghttp2_frame_hd hd;
+  size_t framelen = 0;
+  uint16_t stream_id = 0;
+  struct neat_tlv options[1];
   //std::cerr << __func__ << std::endl;
 
   if (uv_is_active((uv_handle_t *) &client->rt)) {
@@ -566,24 +570,66 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   }
 
   if (client->wbuf_len == 0) {
+    // request data from nghttp2 lib
     client->wbuf_len = nghttp2_session_mem_send(client->session, &client->wbuf);
     if (client->wbuf_len < 0) {
       std::cerr << __func__ << " - [ERROR] nghttp2_session_send() returned error: " << nghttp2_strerror(client->wbuf_len) << std::endl;
       client->disconnect();
-      return -1;
+      return NEAT_ERROR_UNABLE;
     }
 
     if (client->wbuf_len == 0) {
-      //std::cerr << __func__ << " - nothing more to send - stopping write callback" << std::endl;
+      std::cerr << __func__ << " - nothing more to send - stopping write callback" << std::endl;
       opCB->on_writable = NULL;
       opCB->on_all_written = on_all_written;
       neat_set_operations(opCB->ctx, opCB->flow, opCB);
       return NEAT_ERROR_OK;
-      //break;
     }
   }
-  //std::cerr << __func__ << " - neat_write();" << std::endl;
-  code = neat_write(client->ctx, client->flow, client->wbuf, client->wbuf_len, NULL, 0);
+
+  if (client->magic_sent == true) {
+    // Magic packet already sent - just add a frame
+    if (client->wbuf_len >= 9) {
+      util::frame_unpack_frame_hd(&hd, client->wbuf, config.verbose);
+      if (config.verbose) {
+        //std::cerr << __func__ " - outgoing frame - buffered total : " << client->wbuf_len << std::endl;
+        std::cerr << __func__ << " - stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+      }
+    } else {
+      std::cerr << __func__ << " - not enough data for a frame ... implement error handling!!!" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+
+    framelen = 9 + hd.length;
+    // multistreaming or not...
+    if (opCB->flow->stream_count > 1 && opCB->flow->stream_count >= hd.stream_id) {
+      stream_id = hd.stream_id;
+    } else if (opCB->flow->stream_count > 1) {
+      std::cerr << __func__ << " - multistreaming mode - stream_id > stream_count - fix me!" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  } else {
+    /*
+     * Send magic packet (24 bytes) and mandatory settings frame
+     */
+    if (client->wbuf_len >= 24) {
+      if (config.verbose) {
+        std::cerr << __func__ << " - sending magic frame + settings frame ..." << std::endl;
+      }
+    } else {
+      std::cerr << __func__ << " - not enough data for magic frame ... need 24 - have " << client->wbuf_len << " implement me!" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    framelen = 24;
+    client->magic_sent = true;
+  }
+
+  options[0].tag           = NEAT_TAG_STREAM_ID;
+  options[0].type          = NEAT_TYPE_INTEGER;
+  options[0].value.integer = stream_id;
+
+
+  code = neat_write(client->ctx, client->flow, client->wbuf, framelen, options, 1);
   if (code == NEAT_ERROR_WOULD_BLOCK) {
     if (uv_is_active((uv_handle_t *) &client->wt)) {
       uv_timer_again(&client->wt);
@@ -597,7 +643,7 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
     return -1;
   }
 
-  client->wbuf_len = 0;
+  client->wbuf_len -= framelen;
 
   //uv_timer_stop(&client->wt);
 
@@ -618,7 +664,8 @@ HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks)
       success(0),
       settings_payloadlen(0),
       state(ClientState::IDLE),
-      wbuf_len(0)
+      wbuf_len(0),
+      magic_sent(false)
       {
 
   if ((this->ctx = neat_init_ctx()) == NULL) {
@@ -687,7 +734,7 @@ int HttpClient::resolve_host(const std::string &host, uint16_t port) {
 
 int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
 
-  ops.on_connected = on_connect;
+  ops.on_connected = on_connected;
   neat_set_operations(ctx, flow, &ops);
 
   std::cerr << ">>>>> FELIX : neat open ctx: " << ctx << " - host: " << host.c_str() << std::endl;
