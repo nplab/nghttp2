@@ -507,7 +507,6 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
     uv_timer_start(&client->rt, on_timeout, 0, config.timeout);
   }
 
-
   code = neat_read(client->ctx, client->flow, buf.data(), buf.size(), &bytes_read, NULL, 0);
 
   if (code == NEAT_ERROR_WOULD_BLOCK) {
@@ -587,41 +586,46 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
     }
   }
 
-  if (client->magic_sent == true) {
-    // Magic packet already sent - just add a frame
-    if (client->wbuf_len >= 9) {
-      util::frame_unpack_frame_hd(&hd, client->wbuf, config.verbose);
-      if (config.verbose) {
-        //std::cerr << __func__ " - outgoing frame - buffered total : " << client->wbuf_len << std::endl;
-        std::cerr << __func__ << " - stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+  if (opCB->flow->stream_count > 1) {
+    if (client->magic_sent == true) {
+      // Magic packet already sent - just add a frame
+      if (client->wbuf_len >= 9) {
+        util::frame_unpack_frame_hd(&hd, client->wbuf, config.verbose);
+        if (config.verbose) {
+          //std::cerr << __func__ " - outgoing frame - buffered total : " << client->wbuf_len << std::endl;
+          std::cerr << __func__ << " - stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+        }
+      } else {
+        std::cerr << __func__ << " - not enough data for a frame ... implement error handling!!!" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+
+      framelen = 9 + hd.length;
+      // multistreaming or not...
+      if (opCB->flow->stream_count > 1 && opCB->flow->stream_count >= hd.stream_id) {
+        stream_id = hd.stream_id;
+      } else if (opCB->flow->stream_count > 1) {
+        std::cerr << __func__ << " - multistreaming mode - stream_id > stream_count - fix me!" << std::endl;
+        exit(EXIT_FAILURE);
       }
     } else {
-      std::cerr << __func__ << " - not enough data for a frame ... implement error handling!!!" << std::endl;
-      exit(EXIT_FAILURE);
-    }
-
-    framelen = 9 + hd.length;
-    // multistreaming or not...
-    if (opCB->flow->stream_count > 1 && opCB->flow->stream_count >= hd.stream_id) {
-      stream_id = hd.stream_id;
-    } else if (opCB->flow->stream_count > 1) {
-      std::cerr << __func__ << " - multistreaming mode - stream_id > stream_count - fix me!" << std::endl;
-      exit(EXIT_FAILURE);
+      /*
+       * Send magic packet (24 bytes) and mandatory settings frame
+       */
+      if (client->wbuf_len >= 24) {
+        if (config.verbose) {
+          std::cerr << __func__ << " - sending magic frame + settings frame ..." << std::endl;
+        }
+      } else {
+        std::cerr << __func__ << " - not enough data for magic frame ... need 24 - have " << client->wbuf_len << " implement me!" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+      framelen = 24;
+      client->magic_sent = true;
     }
   } else {
-    /*
-     * Send magic packet (24 bytes) and mandatory settings frame
-     */
-    if (client->wbuf_len >= 24) {
-      if (config.verbose) {
-        std::cerr << __func__ << " - sending magic frame + settings frame ..." << std::endl;
-      }
-    } else {
-      std::cerr << __func__ << " - not enough data for magic frame ... need 24 - have " << client->wbuf_len << " implement me!" << std::endl;
-      exit(EXIT_FAILURE);
-    }
-    framelen = 24;
-    client->magic_sent = true;
+    // no multistreaming support - just send complete buffer
+    framelen = client->wbuf_len;
   }
 
   options[0].tag           = NEAT_TAG_STREAM_ID;
