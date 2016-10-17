@@ -1723,6 +1723,8 @@ sorted by 'complete'
 id  responseEnd requestStart  process code size request path)" << std::endl;
 
   const auto &base = client.timing.connect_end_time;
+  std::chrono::microseconds total_avg = std::chrono::microseconds::zero();
+
   for (const auto &req : reqs) {
     auto response_end = std::chrono::duration_cast<std::chrono::microseconds>(
         req->timing.response_end_time - base);
@@ -1730,6 +1732,7 @@ id  responseEnd requestStart  process code size request path)" << std::endl;
         req->timing.request_start_time - base);
     auto total = std::chrono::duration_cast<std::chrono::microseconds>(
         req->timing.response_end_time - req->timing.request_start_time);
+    total_avg += total;
     auto pushed = req->stream_id % 2 == 0;
 
     std::cout << std::setw(3) << req->stream_id << " " << std::setw(11)
@@ -1741,6 +1744,8 @@ id  responseEnd requestStart  process code size request path)" << std::endl;
               << util::utos_unit(req->response_len) << " "
               << req->make_reqpath() << std::endl;
   }
+
+  std::cout << "felix >>>> AVG : " << util::format_duration(total_avg/reqs.size()) << std::endl;
 }
 } // namespace
 
