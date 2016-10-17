@@ -526,7 +526,12 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
         framelen = 9 + hd.length;
         // multistreaming or not...
         if (opCB->flow->stream_count > 1 && opCB->flow->stream_count >= hd.stream_id) {
-          stream_id = hd.stream_id;
+          if (hd.type == NGHTTP2_DATA) {
+            // map all headers to SID 1
+            stream_id = 1;
+          } else {
+            stream_id = hd.stream_id;
+          }
         } else if (opCB->flow->stream_count > 1) {
           std::cerr << __func__ << " - multistreaming mode - stream_id (" << hd.stream_id << ")> stream_count (" << opCB->flow->stream_count << ") - fix me!" << std::endl;
           exit(EXIT_FAILURE);
@@ -584,6 +589,8 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   neat_error_code code = 0;
   uint32_t bytes_read = 0;
   auto handler = static_cast<Http2Handler *>(opCB->userData);
+  nghttp2_frame_hd hd;
+  nghttp2_stream *stream = NULL;
 
   if (handler->get_config()->verbose) {
     std::cerr << __func__ << std::endl;
@@ -617,11 +624,29 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
     } else {
       std::cerr << __func__ << " - neat_read() - bytes read : " << bytes_read << " - stream : " << opCB->stream_id <<  std::endl;
     }
-
   }
+  util::frame_unpack_frame_hd(&hd, buf.data(), handler->get_config()->verbose);
+  std::cerr << __func__ << " - stream H2/SCTP: " << hd.stream_id << "/" << opCB->stream_id << std::endl;
 
   if (handler->get_config()->hexdump) {
     util::hexdump(stdout, buf.data(), bytes_read);
+  }
+
+  // checking stream state
+  //nghttp2_stream * nghttp2_session_find_stream(nghttp2_session *session, int32_t stream_id)
+  //nghttp2_stream_proto_state nghttp2_stream_get_state(nghttp2_stream *stream)
+  if (bytes_read >= 9) {
+    if (hd.type == NGHTTP2_DATA) {
+      if ((stream = nghttp2_session_find_stream(handler->get_session(), hd.stream_id)) == NULL) {
+        std::cerr << __func__ << " - stream not found" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+
+      if (nghttp2_stream_get_state(stream) != NGHTTP2_STREAM_STATE_OPEN) {
+        std::cerr << __func__ << " - stream in wrong state" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    }
   }
 
   rv = nghttp2_session_mem_recv(handler->get_session(), buf.data(), bytes_read);

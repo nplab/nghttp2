@@ -1408,13 +1408,18 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
     return false;
   }
 
+  if (verbose) {
+    std::cerr << "frame - size   : " << hd->length << " bytes" << std::endl;
+    std::cerr << "frame - stream : " << hd->stream_id << std::endl;
+  }
+
   switch (hd->type) {
     /**
      * The DATA frame.
      */
     case NGHTTP2_DATA:
       if (verbose) {
-        std::cerr << "frame - type : DATA" << std::endl;
+        std::cerr << "frame - type   : DATA" << std::endl;
       }
       break;
 
@@ -1423,7 +1428,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_HEADERS:
       if (verbose) {
-        std::cerr << "frame - type : HEADERS" << std::endl;
+        std::cerr << "frame - type   : HEADERS" << std::endl;
       }
       break;
 
@@ -1432,7 +1437,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_PRIORITY:
       if (verbose) {
-        std::cerr << "frame - type : PRIORITY" << std::endl;
+        std::cerr << "frame - type   : PRIORITY" << std::endl;
       }
       break;
 
@@ -1441,7 +1446,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_RST_STREAM:
       if (verbose) {
-        std::cerr << "frame - type : RST_STREAM" << std::endl;
+        std::cerr << "frame - type   : RST_STREAM" << std::endl;
       }
       break;
 
@@ -1450,7 +1455,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_SETTINGS:
       if (verbose) {
-        std::cerr << "frame - type : NGHTTP2_SETTINGS" << std::endl;
+        std::cerr << "frame - type   : NGHTTP2_SETTINGS" << std::endl;
       }
       break;
 
@@ -1459,7 +1464,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_PUSH_PROMISE:
       if (verbose) {
-        std::cerr << "frame - type : NGHTTP2_PUSH_PROMISE" << std::endl;
+        std::cerr << "frame - type   : NGHTTP2_PUSH_PROMISE" << std::endl;
       }
       break;
 
@@ -1468,7 +1473,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_PING:
       if (verbose) {
-        std::cerr << "frame - type : NGHTTP2_PING" << std::endl;
+        std::cerr << "frame - type   : NGHTTP2_PING" << std::endl;
       }
       break;
 
@@ -1477,7 +1482,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_GOAWAY:
       if (verbose) {
-        std::cerr << "frame - type : NGHTTP2_GOAWAY" << std::endl;
+        std::cerr << "frame - type   : NGHTTP2_GOAWAY" << std::endl;
       }
       break;
 
@@ -1486,7 +1491,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_WINDOW_UPDATE:
       if (verbose) {
-        std::cerr << "frame - type : NGHTTP2_WINDOW_UPDATE" << std::endl;
+        std::cerr << "frame - type   : NGHTTP2_WINDOW_UPDATE" << std::endl;
       }
       break;
 
@@ -1497,7 +1502,7 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_CONTINUATION:
       if (verbose) {
-        std::cerr << "frame - type : NGHTTP2_CONTINUATION" << std::endl;
+        std::cerr << "frame - type   : NGHTTP2_CONTINUATION" << std::endl;
       }
       break;
 
@@ -1507,12 +1512,12 @@ bool frame_unpack_frame_hd(nghttp2_frame_hd *hd, const uint8_t *buf, bool verbos
      */
     case NGHTTP2_ALTSVC:
       if (verbose) {
-        std::cerr << "frame - type : NGHTTP2_ALTSVC" << std::endl;
+        std::cerr << "frame - type   : NGHTTP2_ALTSVC" << std::endl;
       }
       break;
 
     default:
-      std::cerr << "ERROR: frame - type : UNKNOWN" << std::endl;
+      std::cerr << "ERROR: frame - type   : UNKNOWN" << std::endl;
       return false;
   }
 

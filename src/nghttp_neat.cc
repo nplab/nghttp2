@@ -498,6 +498,8 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   std::array<uint8_t, 128_k> buf;
   uint32_t bytes_read = 0;
   neat_error_code code;
+  nghttp2_frame_hd hd;
+  nghttp2_stream *stream = NULL;
 
   //std::cerr << __func__ << std::endl;
 
@@ -520,6 +522,25 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
     client->disconnect();
     return -1;
   }
+
+  // checking stream state
+  //nghttp2_stream * nghttp2_session_find_stream(nghttp2_session *session, int32_t stream_id)
+  //nghttp2_stream_proto_state nghttp2_stream_get_state(nghttp2_stream *stream)
+  if (bytes_read >= 9) {
+    util::frame_unpack_frame_hd(&hd, buf.data(), config.verbose);
+    if (hd.type == NGHTTP2_DATA) {
+      if ((stream = nghttp2_session_find_stream(client->session, hd.stream_id)) == NULL) {
+        std::cerr << __func__ << " - stream not found" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+
+      if (nghttp2_stream_get_state(stream) != NGHTTP2_STREAM_STATE_OPEN) {
+        std::cerr << __func__ << " - stream in wrong state" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    }
+  }
+
 
   auto rv = nghttp2_session_mem_recv(client->session, buf.data(), bytes_read);
   if (rv < 0) {
