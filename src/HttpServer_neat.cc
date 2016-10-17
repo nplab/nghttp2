@@ -496,6 +496,9 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   auto handler = static_cast<Http2Handler *>(opCB->userData);
   Http2Handler::WriteBuf *wb = handler->get_wb();
   neat_error_code code;
+  uint16_t stream_id = 0;
+  nghttp2_frame_hd hd;
+  size_t framelen = 0;
 
 
   if (handler->get_config()->verbose) {
@@ -507,7 +510,33 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
       if (handler->get_config()->verbose) {
         std::cerr << __func__ << " - sending " << wb->rleft() << " bytes" << std::endl;
       }
-      code = neat_write(opCB->ctx, opCB->flow, wb->pos, wb->rleft(), NULL, 0);
+
+      if (opCB->flow->stream_count > 1) {
+        if (wb->rleft() >= 9) {
+          util::frame_unpack_frame_hd(&hd, wb->pos, handler->get_config()->verbose);
+          if (handler->get_config()->verbose) {
+            //std::cerr << __func__ " - outgoing frame - buffered total : " << client->wbuf_len << std::endl;
+            std::cerr << __func__ << " - stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
+          }
+        } else {
+          std::cerr << __func__ << " - not enough data for a frame ... implement error handling!!!" << std::endl;
+          exit(EXIT_FAILURE);
+        }
+
+        framelen = 9 + hd.length;
+        // multistreaming or not...
+        if (opCB->flow->stream_count > 1 && opCB->flow->stream_count >= hd.stream_id) {
+          stream_id = hd.stream_id;
+        } else if (opCB->flow->stream_count > 1) {
+          std::cerr << __func__ << " - multistreaming mode - stream_id (" << hd.stream_id << ")> stream_count (" << opCB->flow->stream_count << ") - fix me!" << std::endl;
+          exit(EXIT_FAILURE);
+        }
+      } else {
+        // no multistreaming support - just send complete buffer
+        framelen = wb->rleft();
+      }
+
+      code = neat_write(opCB->ctx, opCB->flow, wb->pos, framelen, NULL, 0);
       if (code == NEAT_ERROR_WOULD_BLOCK) {
         if (handler->get_config()->verbose) {
           std::cerr << __func__ << " - neat_write() - NEAT_ERROR_WOULD_BLOCK" << std::endl;
@@ -520,7 +549,7 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
         delete_handler(handler);
         return -1;
       }
-      wb->drain(wb->rleft());
+      wb->drain(framelen);
       continue;
     }
     wb->reset();
@@ -1717,7 +1746,7 @@ int HttpServer::run() {
   this->ops.on_close = on_close;
   neat_set_operations(this->ctx, this->flow, &ops);
   // wait for on_connected or on_error to be invoked
-  if (neat_accept(this->ctx, this->flow, 8080, NULL, 0)) {
+  if (neat_accept(this->ctx, this->flow, 8080, NEAT_OPTARGS, NEAT_OPTARGS_COUNT)) {
       std::cerr << "[ERROR] neat_accept() failed" << std::endl;
       return -1;
   }
