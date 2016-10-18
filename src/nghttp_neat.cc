@@ -523,11 +523,10 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
     return -1;
   }
 
-  // checking stream state
-  //nghttp2_stream * nghttp2_session_find_stream(nghttp2_session *session, int32_t stream_id)
-  //nghttp2_stream_proto_state nghttp2_stream_get_state(nghttp2_stream *stream)
+  // checking stream state - stream_id > 0 to ensure SCTP
   if (bytes_read >= 9 && opCB->stream_id > 0) {
     util::frame_unpack_frame_hd(&hd, buf.data(), config.verbose);
+    std::cerr << __func__ << " - stream H2/NEAT: " << hd.stream_id << "/" << opCB->stream_id << std::endl;
     if (hd.type == NGHTTP2_DATA) {
       if ((stream = nghttp2_session_find_stream(client->session, hd.stream_id)) == NULL) {
         std::cerr << __func__ << " - stream not found" << std::endl;

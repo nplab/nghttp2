@@ -618,24 +618,10 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
     return NEAT_ERROR_IO;
   }
 
-  if (handler->get_config()->verbose) {
-    if (opCB->stream_id == NEAT_INVALID_STREAM) {
-      std::cerr << __func__ << " - neat_read() - bytes read : " << bytes_read << std::endl;
-    } else {
-      std::cerr << __func__ << " - neat_read() - bytes read : " << bytes_read << " - stream : " << opCB->stream_id <<  std::endl;
-    }
-  }
-  util::frame_unpack_frame_hd(&hd, buf.data(), handler->get_config()->verbose);
-  std::cerr << __func__ << " - stream H2/SCTP: " << hd.stream_id << "/" << opCB->stream_id << std::endl;
-
-  if (handler->get_config()->hexdump) {
-    util::hexdump(stdout, buf.data(), bytes_read);
-  }
-
-  // checking stream state
-  //nghttp2_stream * nghttp2_session_find_stream(nghttp2_session *session, int32_t stream_id)
-  //nghttp2_stream_proto_state nghttp2_stream_get_state(nghttp2_stream *stream)
-  if (bytes_read >= 9) {
+  // checking stream state - stream_id > 0 to ensure SCTP
+  if (bytes_read >= 9 && opCB->stream_id > 0) {
+    util::frame_unpack_frame_hd(&hd, buf.data(), handler->get_config()->verbose);
+    std::cerr << __func__ << " - stream H2/NEAT: " << hd.stream_id << "/" << opCB->stream_id << std::endl;
     if (hd.type == NGHTTP2_DATA) {
       if ((stream = nghttp2_session_find_stream(handler->get_session(), hd.stream_id)) == NULL) {
         std::cerr << __func__ << " - stream not found" << std::endl;
