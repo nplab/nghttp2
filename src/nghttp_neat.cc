@@ -630,6 +630,8 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
         } else if (hd.type == NGHTTP2_HEADERS) {
           stream_id = 1;
         }
+      } else {
+        std::cerr << __func__ << " - h2 stream > flow streams, fallback to default - fix me!" << std::endl;
       }
     } else {
       // Send magic packet (24 bytes) and mandatory settings frame

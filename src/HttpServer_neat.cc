@@ -511,30 +511,28 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
         std::cerr << __func__ << " - sending " << wb->rleft() << " bytes" << std::endl;
       }
 
+      // flow with multiple streams?
       if (opCB->flow->stream_count > 1) {
         if (wb->rleft() >= 9) {
           util::frame_unpack_frame_hd(&hd, wb->pos, handler->get_config()->verbose);
-          if (handler->get_config()->verbose) {
-            //std::cerr << __func__ " - outgoing frame - buffered total : " << client->wbuf_len << std::endl;
-            std::cerr << __func__ << " - stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
-          }
         } else {
           std::cerr << __func__ << " - not enough data for a frame ... implement error handling!!!" << std::endl;
           exit(EXIT_FAILURE);
         }
 
         framelen = 9 + hd.length;
-        // multistreaming or not...
-        if (opCB->flow->stream_count > 1 && opCB->flow->stream_count >= hd.stream_id) {
+
+        // do we have enough streams?
+        if (opCB->flow->stream_count > hd.stream_id) {
+          // map DATA frames to h2 specific stream
           if (hd.type == NGHTTP2_DATA) {
-            // map all headers to SID 1
-            stream_id = 1;
-          } else {
             stream_id = hd.stream_id;
+          // map HEADER frames to stream 1
+          } else if (hd.type == NGHTTP2_HEADERS) {
+            stream_id = 1;
           }
-        } else if (opCB->flow->stream_count > 1) {
-          std::cerr << __func__ << " - multistreaming mode - stream_id (" << hd.stream_id << ")> stream_count (" << opCB->flow->stream_count << ") - fix me!" << std::endl;
-          exit(EXIT_FAILURE);
+        } else {
+          std::cerr << __func__ << " - h2 stream > flow streams, fallback to default - fix me!" << std::endl;
         }
       } else {
         // no multistreaming support - just send complete buffer
