@@ -69,7 +69,7 @@
 static const char *config_property = "{\
     \"transport\": [\
         {\
-            \"value\": \"SCTP\",\
+            \"value\": \"TCP\",\
             \"precedence\": 1\
         }\
     ]\
@@ -485,7 +485,7 @@ void on_timeout_settings(uv_timer_t *timer) {
 
 namespace {
 neat_error_code on_connected(struct neat_flow_operations *opCB) {
-  std::cerr << __func__ << std::endl;
+  //std::cerr << __func__ << std::endl;
   auto client = static_cast<HttpClient *>(opCB->userData);
   client->connected();
   return NEAT_ERROR_OK;
@@ -526,15 +526,16 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   // checking stream state - stream_count > 1 to ensure SCTP
   if (bytes_read >= 9 && opCB->flow->stream_count > 1) {
     util::frame_unpack_frame_hd(&hd, buf.data(), config.verbose);
-    std::cerr << __func__ << " - stream H2/NEAT: " << hd.stream_id << "/" << opCB->stream_id << std::endl;
+    //std::cerr << __func__ << " - stream H2/NEAT: " << hd.stream_id << "/" << opCB->stream_id << std::endl;
     if (hd.type == NGHTTP2_DATA) {
       if ((stream = nghttp2_session_find_stream(client->session, hd.stream_id)) == NULL) {
         std::cerr << __func__ << " - stream not found" << std::endl;
         exit(EXIT_FAILURE);
       }
 
-      if (nghttp2_stream_get_state(stream) != NGHTTP2_STREAM_STATE_OPEN) {
-        std::cerr << __func__ << " - stream in wrong state" << std::endl;
+      if (nghttp2_stream_get_state(stream) != NGHTTP2_STREAM_STATE_OPEN &&
+          nghttp2_stream_get_state(stream) != NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL) {
+        std::cerr << __func__ << " - stream " << hd.stream_id << " in wrong state " << nghttp2_stream_get_state(stream) << " for type " << hd.type << std::endl;
         exit(EXIT_FAILURE);
       }
     }
@@ -561,7 +562,7 @@ neat_error_code on_all_written(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
 
   if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
-    std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
+    //std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
     client->disconnect();
     return -1;
   }
@@ -712,8 +713,6 @@ HttpClient::HttpClient(const nghttp2_session_callbacks *callbacks)
   rt.data = this;
   settings_timer.data = this;
 
-  std::cerr << "CTX: " << ctx << std::endl;
-
   memset(&ops, 0, sizeof(ops));
   ops.userData = this;
 }
@@ -763,8 +762,6 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
   ops.on_connected = on_connected;
   neat_set_operations(ctx, flow, &ops);
 
-  std::cerr << ">>>>> FELIX : neat open ctx: " << ctx << " - host: " << host.c_str() << std::endl;
-
   NEAT_OPTARGS_DECLARE(NEAT_OPTARGS_MAX);
   NEAT_OPTARGS_INIT();
   NEAT_OPTARG_INT(NEAT_TAG_STREAM_COUNT, 2048);
@@ -780,8 +777,6 @@ int HttpClient::initiate_connection(const std::string &host, uint16_t port) {
 }
 
 void HttpClient::disconnect() {
-  //std::cerr << __func__ << std::endl;
-
   state = ClientState::IDLE;
 
   for (auto req = std::begin(reqvec); req != std::end(reqvec); ++req) {
@@ -1744,6 +1739,7 @@ id  responseEnd requestStart  process code size request path)" << std::endl;
 
   const auto &base = client.timing.connect_end_time;
   std::chrono::microseconds total_avg = std::chrono::microseconds::zero();
+  uint32_t total_microseconds = 0;
 
   for (const auto &req : reqs) {
     auto response_end = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1754,6 +1750,8 @@ id  responseEnd requestStart  process code size request path)" << std::endl;
         req->timing.response_end_time - req->timing.request_start_time);
     total_avg += total;
     auto pushed = req->stream_id % 2 == 0;
+
+    total_microseconds = response_end.count();
 
     std::cout << std::setw(3) << req->stream_id << " " << std::setw(11)
               << ("+" + util::format_duration(response_end)) << " "
@@ -1766,6 +1764,7 @@ id  responseEnd requestStart  process code size request path)" << std::endl;
   }
 
   std::cout << "felix >>>> AVG : " << util::format_duration(total_avg/reqs.size()) << std::endl;
+  std::cerr << "csv," << total_avg.count()/reqs.size() << "," << total_microseconds << std::endl;
 }
 } // namespace
 
@@ -1777,11 +1776,7 @@ int communicate(const std::string &scheme, const std::string &host,
                                        int64_t, int32_t>> requests,
                 const nghttp2_session_callbacks *callbacks) {
   int result = 0;
-
-
   HttpClient client{callbacks};
-
-  std::cerr << ">>>>> felix 2 - client.ctx "<< client.ctx << std::endl;
   int32_t dep_stream_id = 0;
 
   if (!config.no_dep) {
