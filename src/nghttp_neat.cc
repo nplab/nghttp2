@@ -524,7 +524,7 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   }
 
   // checking stream state - stream_count > 1 to ensure SCTP
-  if (bytes_read >= 9 && opCB->stream_count > 1) {
+  if (bytes_read >= 9 && opCB->flow->stream_count > 1) {
     util::frame_unpack_frame_hd(&hd, buf.data(), config.verbose);
     std::cerr << __func__ << " - stream H2/NEAT: " << hd.stream_id << "/" << opCB->stream_id << std::endl;
     if (hd.type == NGHTTP2_DATA) {
