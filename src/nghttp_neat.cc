@@ -526,7 +526,7 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
   // checking stream state
   //nghttp2_stream * nghttp2_session_find_stream(nghttp2_session *session, int32_t stream_id)
   //nghttp2_stream_proto_state nghttp2_stream_get_state(nghttp2_stream *stream)
-  if (bytes_read >= 9) {
+  if (bytes_read >= 9 && opCB->stream_id > 0) {
     util::frame_unpack_frame_hd(&hd, buf.data(), config.verbose);
     if (hd.type == NGHTTP2_DATA) {
       if ((stream = nghttp2_session_find_stream(client->session, hd.stream_id)) == NULL) {
@@ -560,7 +560,6 @@ neat_error_code on_readable(struct neat_flow_operations *opCB) {
 namespace {
 neat_error_code on_all_written(struct neat_flow_operations *opCB) {
   auto client = static_cast<HttpClient *>(opCB->userData);
-  //std::cerr << __func__ << std::endl;
 
   if (nghttp2_session_want_read(client->session) == 0 && nghttp2_session_want_write(client->session) == 0) {
     std::cerr << __func__ << " - nothing read and nothing todo - closing" << std::endl;
@@ -581,16 +580,17 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   size_t framelen = 0;
   uint16_t stream_id = 0;
   struct neat_tlv options[1];
-  //std::cerr << __func__ << std::endl;
 
+  // handle timer
   if (uv_is_active((uv_handle_t *) &client->rt)) {
     uv_timer_again(&client->rt);
   } else if (config.timeout) {
     uv_timer_start(&client->rt, on_timeout, 0, config.timeout);
   }
 
+  // if we have no data left to send -> request data from library
   if (client->wbuf_len == 0) {
-    // request data from nghttp2 lib
+    // request data from nghttp2 lib, disconnect if something failed
     client->wbuf_len = nghttp2_session_mem_send(client->session, &client->wbuf);
     if (client->wbuf_len < 0) {
       std::cerr << __func__ << " - [ERROR] nghttp2_session_send() returned error: " << nghttp2_strerror(client->wbuf_len) << std::endl;
@@ -609,32 +609,31 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
     }
   }
 
+  // have a flow with multiple streams
   if (opCB->flow->stream_count > 1) {
+    // Magic packet already sent - just add a frame
     if (client->magic_sent == true) {
-      // Magic packet already sent - just add a frame
       if (client->wbuf_len >= 9) {
         util::frame_unpack_frame_hd(&hd, client->wbuf, config.verbose);
-        if (config.verbose) {
-          //std::cerr << __func__ " - outgoing frame - buffered total : " << client->wbuf_len << std::endl;
-          std::cerr << __func__ << " - stream : " << hd.stream_id << " - length : " << hd.length << std::endl;
-        }
       } else {
         std::cerr << __func__ << " - not enough data for a frame ... implement error handling!!!" << std::endl;
         exit(EXIT_FAILURE);
       }
 
       framelen = 9 + hd.length;
-      // multistreaming or not...
-      if (opCB->flow->stream_count > 1 && opCB->flow->stream_count >= hd.stream_id) {
-        stream_id = hd.stream_id;
-      } else if (opCB->flow->stream_count > 1) {
-        std::cerr << __func__ << " - multistreaming mode - stream_id > stream_count - fix me!" << std::endl;
-        exit(EXIT_FAILURE);
+
+      // do we have enough streams?
+      if (opCB->flow->stream_count > hd.stream_id) {
+        // map DATA frames to h2 specific stream
+        if (hd.type == NGHTTP2_DATA) {
+          stream_id = hd.stream_id;
+        // map HEADER frames to stream 1
+        } else if (hd.type == NGHTTP2_HEADERS) {
+          stream_id = 1;
+        }
       }
     } else {
-      /*
-       * Send magic packet (24 bytes) and mandatory settings frame
-       */
+      // Send magic packet (24 bytes) and mandatory settings frame
       if (client->wbuf_len >= 24) {
         if (config.verbose) {
           std::cerr << __func__ << " - sending magic frame + settings frame ..." << std::endl;
@@ -654,7 +653,6 @@ neat_error_code on_writable(struct neat_flow_operations *opCB) {
   options[0].tag           = NEAT_TAG_STREAM_ID;
   options[0].type          = NEAT_TYPE_INTEGER;
   options[0].value.integer = stream_id;
-
 
   code = neat_write(client->ctx, client->flow, client->wbuf, framelen, options, 1);
   if (code == NEAT_ERROR_WOULD_BLOCK) {
